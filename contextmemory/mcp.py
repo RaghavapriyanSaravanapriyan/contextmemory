@@ -146,7 +146,7 @@ class MCPServer:
             "forget": self._tool_forget,
         }.get(name)
         if handler is None:
-            return f"unknown tool: {name}"
+            raise ValueError(f"unknown tool: {name}")
         return handler(args)
 
     # --- JSON-RPC loop ------------------------------------------------------
