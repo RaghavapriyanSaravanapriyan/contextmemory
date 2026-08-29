@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections.abc import Callable
 from datetime import datetime
 
@@ -242,6 +243,87 @@ def _cmd_mcp(args: argparse.Namespace) -> int:
     return mcp_main(["--container", args.container])
 
 
+def _cmd_chat(args: argparse.Namespace) -> int:
+    """Chat with Ollama while ContextMemory tools are available in-process."""
+    from contextmemory.engine.ollama import OllamaManager
+    from contextmemory.mcp import _TOOLS, MCPServer
+
+    manager = OllamaManager(args.url)
+    if not manager.start_managed():
+        print(f"Ollama unavailable: {manager.last_error}", file=sys.stderr)
+        return 1
+    model = args.model or (manager.list_models(refresh=True) or [None])[0]
+    if not model:
+        print("No Ollama models found. Pull one with: ollama pull qwen3:4b",
+              file=sys.stderr)
+        return 1
+
+    reader = manager.reader(model, max_tokens=args.max_tokens)
+    memory = MCPServer(container=args.container)
+    tools = [
+        {"type": "function", "function": {
+            "name": tool["name"],
+            "description": tool["description"],
+            "parameters": tool["inputSchema"],
+        }}
+        for tool in _TOOLS
+    ]
+    system = (
+        "You are an assistant with persistent ContextMemory. Always call "
+        "the memory tool for durable user facts and call recall before "
+        "answering questions about the user or prior conversations. Do not "
+        "claim to remember anything unless the tool returned it. Answer "
+        "directly and briefly."
+    )
+    messages: list[dict] = [{"role": "system", "content": system}]
+    print(f"ContextMemory chat | Ollama: {model} | MCP: connected")
+    print("Type /exit to quit.\n")
+    try:
+        while True:
+            try:
+                prompt = input("you> ").strip()
+            except EOFError:
+                break
+            if not prompt:
+                continue
+            if prompt.lower() in {"/exit", "/quit"}:
+                break
+            is_question = prompt.rstrip().endswith("?")
+            if not is_question and (
+                prompt.lower().startswith(("i ", "i'm ", "my ", "remember "))
+            ):
+                stored = memory._dispatch("memory", {"content": prompt})
+                prompt += f"\n\n[ContextMemory write result: {stored}]"
+            if is_question:
+                retrieved = memory._dispatch("recall", {"query": prompt})
+                prompt += f"\n\n[ContextMemory retrieved memory:\n{retrieved}]"
+            messages.append({"role": "user", "content": prompt})
+            for _ in range(4):
+                message = reader.chat_with_tools(messages, tools,
+                                                  max_tokens=args.max_tokens)
+                messages.append(message)
+                calls = message.get("tool_calls") or []
+                if not calls:
+                    print(f"ollama> {(message.get('content') or '').strip()}\n")
+                    break
+                for call in calls:
+                    fn = call.get("function", {})
+                    name = fn.get("name", "")
+                    raw_args = fn.get("arguments", {}) or {}
+                    call_args = (json.loads(raw_args) if isinstance(raw_args, str)
+                                 else raw_args)
+                    result = memory._dispatch(name, call_args)
+                    messages.append({
+                        "role": "tool", "content": result,
+                    })
+            else:
+                print("ollama> Tool loop limit reached; please try again.\n")
+    finally:
+        reader.close()
+        manager.close()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="ContextMemory — memory infrastructure for AI systems.",
@@ -327,6 +409,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_mcp.add_argument("--container", default="brain")
     p_mcp.set_defaults(func=_cmd_mcp)
+
+    p_chat = sub.add_parser(
+        "chat", help="chat with Ollama using ContextMemory MCP tools"
+    )
+    p_chat.add_argument("--model", default=None,
+                        help="Ollama model (default: first installed model)")
+    p_chat.add_argument("--url", default="http://localhost:11434")
+    p_chat.add_argument("--container", default="brain")
+    p_chat.add_argument("--max-tokens", type=int, default=512)
+    p_chat.set_defaults(func=_cmd_chat)
 
     args = parser.parse_args(argv)
     if args.command is None:

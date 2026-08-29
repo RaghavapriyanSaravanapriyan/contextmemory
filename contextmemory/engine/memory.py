@@ -121,6 +121,7 @@ class MemoryEngine:
     def persist(self) -> None:
         """Write the memory journal to disk (no-op without a journal path)."""
         if self._journal:
+            Path(self._journal).parent.mkdir(parents=True, exist_ok=True)
             self._store.save(self._journal)
 
     @property

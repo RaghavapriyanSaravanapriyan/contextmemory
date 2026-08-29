@@ -19,6 +19,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import time
+from typing import Any
 
 import httpx
 
@@ -87,6 +88,30 @@ class OllamaChatClient:
         resp.raise_for_status()
         message = resp.json().get("message", {}) or {}
         return (message.get("content", "") or "").strip()
+
+    def chat_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        *,
+        temperature: float = 0.0,
+        max_tokens: int | None = None,
+    ) -> dict[str, Any]:
+        """Run one native Ollama chat turn with function tools enabled."""
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            "tools": tools,
+            "stream": False,
+            "think": False,
+            "options": {"temperature": temperature},
+        }
+        cap = max_tokens if max_tokens is not None else self._max_tokens
+        if cap:
+            payload["options"]["num_predict"] = cap
+        resp = self._client.post("/api/chat", json=payload)
+        resp.raise_for_status()
+        return resp.json().get("message", {}) or {}
 
     def close(self) -> None:
         self._client.close()

@@ -36,6 +36,7 @@ from textual.widgets import (
     ListItem,
     ListView,
     OptionList,
+    ProgressBar,
     Static,
 )
 
@@ -264,6 +265,8 @@ class OllamaConnectScreen(ModalScreen):
             yield Button("Launch ollama serve", id="launch")
         yield Static("", id="hint")
         yield ListView(id="models")
+        yield ProgressBar(total=100, show_percentage=False, show_eta=False,
+                          id="modal-processing-bar")
         yield Static("", id="error")
 
     def on_mount(self) -> None:
@@ -283,38 +286,56 @@ class OllamaConnectScreen(ModalScreen):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "scan":
-            self._scan()
+            self._apply_config()
+            self._set_loading(True, "Scanning Ollama...")
+            self.run_worker(self._scan_worker, thread=True, exclusive=True)
         elif event.button.id == "launch":
-            self._launch()
+            self._apply_config()
+            self._set_loading(True, "Launching ollama serve...")
+            self.run_worker(self._launch_worker, thread=True, exclusive=True)
 
-    def _scan(self) -> None:
-        self._apply_config()
-        self._hint("Scanning Ollama...")
+    def _set_loading(self, active: bool, label: str) -> None:
+        self._hint(label)
+        bar = self.query_one("#modal-processing-bar", ProgressBar)
+        bar.update(progress=100 if active else 0)
+        bar.display = active
+
+    def _scan_worker(self) -> None:
         models = self.manager.list_models(refresh=True)
+        self.app.call_from_thread(self._show_models, models)
+
+    def _show_models(self, models: list[str]) -> None:
         listview = self.query_one("#models", ListView)
         listview.clear()
         if not models:
             self._hint("No models found. Pull one with: ollama pull qwen3:8b")
+            self._set_loading(False, "No models found")
             return
         for name in models:
             listview.append(ListItem(Label(name)))
         self._hint(f"{len(models)} model(s) available. Select one.")
+        self._set_loading(False, "Select a model")
 
-    def _launch(self) -> None:
-        self._apply_config()
-        self._hint("Launching `ollama serve`...")
+    def _launch_worker(self) -> None:
         ok = self.manager.start_managed()
         if ok:
-            self._hint("ollama serve is running. Scanning models...")
-            self._scan()
+            models = self.manager.list_models(refresh=True)
+            self.app.call_from_thread(self._show_models, models)
         else:
-            self._error(self.manager.last_error or "failed to launch ollama")
+            self.app.call_from_thread(
+                self._show_launch_error,
+                self.manager.last_error or "failed to launch ollama",
+            )
+
+    def _show_launch_error(self, error: str) -> None:
+        self._error(error)
+        self._set_loading(False, "Launch failed")
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         if event.item is None:
             return
         label = event.item.query_one(Label)
-        self.dismiss(str(label.renderable))
+        self.dismiss(str(label.content))
 
 
 class Dashboard(Screen):
@@ -356,6 +377,10 @@ class Dashboard(Screen):
                     nav.add_option(label)
                 yield nav
             yield Vertical(id="content")
+        with Horizontal(id="processing-indicator"):
+            yield Static("READY", id="processing-label")
+            yield ProgressBar(total=100, show_percentage=False, show_eta=False,
+                              id="processing-bar")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -597,6 +622,11 @@ class MemoryBrainApp(App):
     #statusline { height: 1; padding: 0 1; }
     #quick-actions { height: 3; padding: 0 1; }
     #quick-actions Button { width: 1fr; margin: 0 1 0 0; }
+    #processing-indicator { dock: bottom; width: 32; height: 2; padding: 0 1;
+                            background: $panel; align: right middle; }
+    #processing-label { width: 14; content-align: right middle; color: $success; }
+    #processing-bar { width: 14; height: 1; margin: 0 0 0 1; display: none; }
+    #modal-processing-bar { height: 1; margin: 1 2; display: none; }
     #nav { height: 1fr; }
     #content { height: 1fr; padding: 1 2; }
     #brain-pane { height: 1fr; }
@@ -698,7 +728,9 @@ class MemoryBrainApp(App):
         self.live_model = model
         self.ollama_state = "connected"
         self._offline = False
-        self.client.set_extractor(LLMExtractor(self.ollama.reader(model)))
+        self.client.set_extractor(
+            LLMExtractor(self.ollama.reader(model, max_tokens=1024))
+        )
         self._refresh_status()
 
     async def _auto_connect(self) -> None:
@@ -721,8 +753,23 @@ class MemoryBrainApp(App):
             self._log("No models pulled. Run: ollama pull qwen3:8b")
 
     def _refresh_status(self) -> None:
+        if getattr(self, "_worker_mode", False):
+            self.call_from_thread(self._refresh_status_ui)
+            return
+        self._refresh_status_ui()
+
+    def _refresh_status_ui(self) -> None:
         with contextlib.suppress(Exception):
             self.query_one(Dashboard)._render_status()
+
+    def _set_processing(self, active: bool, label: str) -> None:
+        with contextlib.suppress(Exception):
+            bar = self.query_one("#processing-bar", ProgressBar)
+            status = self.query_one("#processing-label", Static)
+            bar.update(progress=100 if active else 0)
+            bar.display = active
+            status.update(label)
+            status.styles.color = "cyan" if active else "green"
 
     @property
     def client(self) -> MemoryClient:
@@ -775,6 +822,23 @@ class MemoryBrainApp(App):
             return
         self._demo_running = True
         self._log("Replaying demo...")
+        self._set_processing(True, "DEMO RUNNING")
+        self.run_worker(self._run_demo, thread=True, exclusive=True)
+
+    def _run_demo(self) -> None:
+        self._worker_mode = True
+        try:
+            self._replay_demo_steps()
+        finally:
+            self._worker_mode = False
+            self.call_from_thread(self._set_processing, False, "READY")
+            self.call_from_thread(self._finish_demo)
+
+    def _finish_demo(self) -> None:
+        self._demo_running = False
+        self._refresh_status()
+
+    def _replay_demo_steps(self) -> None:
         try:
             self._client = MemoryClient(
                 self._container,
@@ -785,8 +849,11 @@ class MemoryBrainApp(App):
             self.bench_rows = []
             if self.live_model:
                 self._client.set_extractor(
-                    LLMExtractor(self.ollama.reader(self.live_model))
+                    LLMExtractor(
+                        self.ollama.reader(self.live_model, max_tokens=1024)
+                    )
                 )
+            live_answered = False
             for cell in demo.seed_cells():
                 self._client.engine.store.reconcile(cell)
             for step in self._scenario:
@@ -795,19 +862,25 @@ class MemoryBrainApp(App):
                         self._client.engine.store.reconcile(cell)
                     self._log("[contradiction / update] reconciled 2 cells")
                     continue
-                session = demo.demo_session(step)
+                session = None if self.live_model else demo.demo_session(step)
                 if session is not None:
                     rep = self._client.session(session)
                     self._log(f"[{step.label}] ingested {rep.cells} cells "
                               f"({rep.new_cells} new)")
                 elif step.is_question:
                     self._ask_with_trace(step.question)
+                    if self.live_model and not live_answered:
+                        # One real model-backed answer proves the integration;
+                        # the remaining scripted views stay instant for demos.
+                        live_answered = True
+                        self._offline = True
+            if self.live_model:
+                self._offline = False
             self._log("Demo complete. Explore Timeline, Why, and Performance.")
         except Exception as exc:  # noqa: BLE001 - keep demo visible and recoverable
             self._log(f"Demo error: {exc}")
         finally:
-            self._demo_running = False
-            self._refresh_status()
+            pass
 
     # --- ask ---------------------------------------------------------------
 
@@ -896,6 +969,12 @@ class MemoryBrainApp(App):
         ]
 
     def _log(self, line: str) -> None:
+        if getattr(self, "_worker_mode", False):
+            self.call_from_thread(self._log_ui, line)
+            return
+        self._log_ui(line)
+
+    def _log_ui(self, line: str) -> None:
         self.log_lines.append(f"[{time.strftime('%H:%M:%S')}] {line}")
         self.log_lines = self.log_lines[-8:]
         with contextlib.suppress(Exception):
