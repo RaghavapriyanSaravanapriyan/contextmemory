@@ -29,6 +29,8 @@ const std::unordered_set<std::string>& stopwords() {
         "does", "did", "have", "has", "had", "as", "so", "too", "will",
         "would", "can", "could", "should", "about", "into", "over", "there",
         "what", "which", "who", "when", "where", "how", "why",
+        "user", "agent", "system", "assistant", "question", "answer",
+        "please", "does", "the", "this", "that",
     };
     return words;
 }

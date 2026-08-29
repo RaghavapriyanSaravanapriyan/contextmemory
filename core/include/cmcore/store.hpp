@@ -1,11 +1,16 @@
-// ContextMemory core — the temporal graph store.
+// ContextMemory core — the ETMC store.
 //
-// The Store is the single write/read surface of the core engine. Write path:
-// atomic batches of typed ops (create / update / link / expire / forget)
-// produced by the extraction layer; the LLM never touches the core directly.
-// Read path: deterministic hybrid retrieval (BM25 + vector + entity boost +
-// recency) fused with RRF, constrained by a token budget. Persistence: an
-// append-only binary journal replayed on load.
+// Write path: capture immutable episodes (cheap, synchronous, no LLM), then
+// reconcile compact memory cells produced by the extraction layer. Reconcile
+// is deterministic first: exact-hash dedup, then subject/predicate versioning
+// with validity windows, then semantic ambiguity resolution only when the
+// caller supplies it. State projections maintain the current answer per
+// (container, subject, predicate).
+//
+// Read path: compile a query into a bounded QueryPlan without an LLM, run the
+// candidate channels (lexical, dense, entity, temporal, relation, projection),
+// fuse with RRF, and pack the minimum-sufficient evidence under a token budget.
+// Persistence: append-only binary journal replayed on load.
 
 #pragma once
 
@@ -19,121 +24,183 @@
 
 namespace cmcore {
 
-// A single write operation. Ops are the language the extraction layer speaks;
-// the Store applies them atomically and journals them.
-struct Op {
-    enum class Kind : uint8_t {
-        CreateFact,  // text, kind, is_static, confidence, ts (created + valid)
-        UpdateFact,  // fact_id, text, ts: supersede fact_id with new version
-        Link,        // fact_id -> other_id, edge_type
-        Expire,      // fact_id, ts: close validity window (no replacement)
-        Forget,      // fact_id, ts: transactional removal
-        SetConfidence,  // fact_id, value
-    };
+// --- write ops --------------------------------------------------------------
 
-    Kind kind = Kind::CreateFact;
-    uint64_t fact_id = 0;
-    uint64_t other_id = 0;
-    EdgeType edge_type = EdgeType::Related;
-    FactKind fact_kind = FactKind::World;
-    bool is_static = false;
-    float confidence = 1.0f;
-    Timestamp ts = 0;
+// A compact cell produced by extraction. Reconcile uses subject/predicate to
+// version deterministically before any semantic adjudication.
+struct CellInput {
+    std::string subject;
+    std::string predicate;
+    std::string object;
     std::string text;
-    std::string ref;  // source reference for the fact
-    std::vector<std::string> entities;  // entity names for CreateFact
+    CellKind kind = CellKind::World;
+    Timestamp observed_at = 0;  // system time; 0 = now
+    Timestamp valid_from = 0;   // event time; 0 = observed_at
+    float confidence = 1.0f;
+    float salience = 0.5f;
+    std::string source_ref;  // episode/session ref
+    uint32_t source_begin = 0;
+    uint32_t source_end = 0;
+    std::vector<std::string> tags;
+    std::vector<std::string> entities;
 };
 
+// --- query compilation ------------------------------------------------------
+
+struct QueryPlan {
+    TimeMode time_mode = TimeMode::None;
+    Timestamp time_start = 0;  // resolved interval (ms)
+    Timestamp time_end = kNever;
+    std::vector<std::string> entity_seeds;
+    RelationMode relation_mode = RelationMode::None;
+    uint32_t kind_mask = 0xFFFFFFFFu;  // allowed CellKind bits
+    std::vector<std::string> tags;
+    uint32_t candidate_cap = 32;    // 4 | 8 | 16 | 32
+    uint32_t expansion_cap = 1;     // graph hops
+    size_t token_budget = 512;      // hard evidence cap
+    bool fallback = true;           // widen one level when coverage is low
+    std::string subject_hint;       // e.g. "user"
+    std::string predicate_hint;     // e.g. "location" (direct projection hit)
+    std::string text;               // original query (lexical channel)
+};
+
+// --- read results -----------------------------------------------------------
+
 struct SearchResult {
-    uint64_t fact_id = 0;
+    uint64_t cell_id = 0;
     std::string text;
+    std::string subject;
+    std::string predicate;
+    std::string object;
     float score = 0.0f;
-    FactKind kind = FactKind::World;
-    bool is_static = false;
+    CellKind kind = CellKind::World;
+    CellStatus status = CellStatus::Active;
     float confidence = 1.0f;
+    float salience = 0.5f;
+    uint32_t access_heat = 0;
     Timestamp valid_from = 0;
-    Timestamp invalid_at = kNever;
-    std::string source_ref;
+    Timestamp valid_until = kNever;
     uint64_t root_id = 0;
+    uint64_t parent_id = 0;
+    std::string source_ref;
+    std::vector<std::string> tags;
+    bool projection_hit = false;  // selected from a state projection
+};
+
+struct EvidenceItem {
+    SearchResult cell;
+    bool covers_current = false;
+    bool covers_historical = false;
+    bool covers_relation = false;
+};
+
+struct EvidencePack {
+    std::vector<EvidenceItem> items;
+    size_t tokens = 0;
+    size_t budget = 0;
+    bool sufficient = false;  // enough evidence to answer, else abstain
+    bool used_fallback = false;
+};
+
+struct SearchTrace {
+    uint32_t candidates_seen = 0;
+    uint32_t lexical_hits = 0;
+    uint32_t dense_hits = 0;
+    uint32_t entity_hits = 0;
+    uint32_t projection_hits = 0;
+    bool routed_by_projection = false;
+    bool used_fallback = false;
+    TimeMode time_mode = TimeMode::None;
+    RelationMode relation_mode = RelationMode::None;
+};
+
+struct CompiledQuery {
+    QueryPlan plan;
+    SearchTrace trace;
 };
 
 struct ProfileResult {
-    std::vector<SearchResult> static_facts;
-    std::vector<SearchResult> dynamic_facts;
-};
-
-struct SearchOptions {
-    Timestamp at_time = 0;          // facts must be valid at this time
-    uint32_t top_k = 15;
-    size_t token_budget = 700;      // 0 = unlimited
-    bool include_expired = false;   // include transactionally-superseded facts
-    uint32_t expand_depth = 0;      // graph expansion hops around hits
+    std::vector<SearchResult> static_facts;   // stable, high-salience
+    std::vector<SearchResult> dynamic_facts;  // recent activity
 };
 
 class Store {
 public:
     explicit Store(std::string container_tag);
 
-    // --- write path ---
-    uint64_t create_fact(const Fact& fact);
-    void apply(const Op& op);
-    void apply_batch(const std::vector<Op>& ops);  // validated: all-or-nothing
-    void add_fact_embedding(uint64_t fact_id, std::span<const float> vec);
+    // --- capture (synchronous, no LLM) -------------------------------------
+    uint64_t capture_episode(const Episode& ep);
 
-    // Create a typed edge between two facts (updates/extends/derives/...).
+    // --- reconcile (deterministic first) -----------------------------------
+    // Returns the winning cell id (existing on dedup, new on create/update).
+    // Sets projection when subject+predicate are present.
+    uint64_t reconcile(const CellInput& in);
+
+    // --- projections --------------------------------------------------------
+    const StateProjection* projection(const std::string& subject,
+                                      const std::string& predicate) const;
+    void set_access_heat(uint64_t cell_id, uint32_t heat);
+    void bump_access(uint64_t cell_id);
+
+    // --- query compilation --------------------------------------------------
+    CompiledQuery compile(const std::string& question, Timestamp at_time) const;
+
+    // --- read path ----------------------------------------------------------
+    std::vector<SearchResult> search(const QueryPlan& plan,
+                                     std::span<const float> query_vec) const;
+    EvidencePack pack(const std::vector<SearchResult>& ranked,
+                      const QueryPlan& plan) const;
+
+    ProfileResult profile(Timestamp at_time, uint32_t top_k) const;
+
+    // --- low-level ops (tests / callers that bypass reconcile) -------------
+    uint64_t create_cell(const MemoryCell& cell);
+    void add_embedding(uint64_t cell_id, std::span<const float> vec);
     void link(EdgeType type, uint64_t from, uint64_t to, Timestamp at);
 
-    // Version an existing fact: closes the old fact's validity window and
-    // creates a child version linked by an Updates edge. Returns the new id.
-    uint64_t update_fact(uint64_t fact_id, const std::string& text,
-                         Timestamp ts,
-                         const std::vector<std::string>& entities = {});
-
-    // Create a fact, registering any entity names and linking them.
-    uint64_t add_fact(const std::string& text, FactKind kind, bool is_static,
-                      float confidence, Timestamp ts, const std::string& ref,
-                      const std::vector<std::string>& entities = {});
-
-    // --- read path ---
-    std::vector<SearchResult> search(
-        const std::string& text,
-        std::span<const float> query_vec,          // empty = skip vector channel
-        std::span<const std::string> query_entities,  // entity boost
-        const SearchOptions& opts) const;
-
-    ProfileResult profile(const SearchOptions& opts) const;
-
-    // --- introspection ---
-    const Fact* fact(uint64_t id) const;
-    size_t fact_count() const { return facts_.size(); }
+    // --- introspection ------------------------------------------------------
+    const MemoryCell* cell(uint64_t id) const;
+    const Episode* episode(uint64_t id) const;
+    size_t cell_count() const { return cells_.size(); }
     size_t edge_count() const { return edges_.size(); }
     size_t entity_count() const { return entities_.size(); }
+    size_t episode_count() const { return episodes_.size(); }
+    size_t projection_count() const { return projections_.size(); }
     uint64_t container() const { return container_; }
 
-    // --- persistence ---
+    // --- persistence --------------------------------------------------------
     void save(const std::string& path) const;
     void load(const std::string& path);
 
 private:
     uint64_t next_id();
     void add_edge(EdgeType type, uint64_t from, uint64_t to, Timestamp at);
-    uint64_t apply_update(uint64_t fact_id, const std::string& text, Timestamp ts,
-                          const std::vector<std::string>& entities);
-    void index_fact(const Fact& fact);
-    void unindex_fact(uint64_t fact_id);
-    void ensure_entity(const std::string& name, uint64_t fact_id);
+    void index_cell(const MemoryCell& c);
+    void unindex_cell(uint64_t cell_id);
+    void update_projection(const MemoryCell& c);
+    uint64_t ensure_entity(const std::string& name, uint64_t cell_id);
     uint64_t resolve_entity(const std::string& name) const;
-    std::vector<uint64_t> active_candidates(Timestamp at,
-                                            bool include_expired) const;
-    void add_expanded(const std::vector<SearchResult>& hits, Timestamp at,
-                      uint32_t depth, std::vector<SearchResult>& out) const;
+    std::vector<uint64_t> active_candidates(const QueryPlan& plan,
+                                            Timestamp at) const;
+    void add_expanded(const std::vector<SearchResult>& hits,
+                      const QueryPlan& plan, Timestamp at,
+                      std::vector<SearchResult>& out) const;
+    std::pair<std::string, std::string> infer_subject_predicate(
+        const std::string& question,
+        const std::vector<std::string>& entities) const;
+    void resolve_relative_time(QueryPlan& plan, Timestamp at_time) const;
 
     std::string container_tag_;
     uint64_t container_;
-    std::vector<Fact> facts_;
+    std::vector<MemoryCell> cells_;
     std::vector<Edge> edges_;
     std::vector<Entity> entities_;
-    std::unordered_map<uint64_t, std::vector<uint64_t>> entity_to_facts_;
+    std::vector<Episode> episodes_;
+    // key: subject + '\x1f' + predicate -> projection
+    std::vector<StateProjection> projections_;
+    std::unordered_map<uint64_t, std::vector<uint64_t>> entity_to_cells_;
+    std::unordered_map<std::string, std::vector<uint64_t>> tag_to_cells_;
+    std::unordered_map<std::string, uint64_t> content_hash_to_cell_;
     uint64_t id_counter_ = 1;
 
     Bm25Index bm25_;

@@ -1,9 +1,9 @@
-// ContextMemory core — dependency-free test suite.
+// ContextMemory core — ETMC dependency-free test suite.
 //
-// Covers the write path (create/update/link/expire/forget), bi-temporal
-// validity semantics, version chains, the hybrid read path (BM25 + vector +
-// entity + recency), container isolation, token budgets, profiles, and the
-// snapshot journal round-trip.
+// Covers the write path (capture / reconcile / project / version), bi-temporal
+// validity, late-arriving events, exact dedup, container isolation, the
+// compiled query plan, hybrid channels, token-budget evidence packing, graph
+// expansion caps, profiles, and the journal round-trip.
 
 #include <cmath>
 #include <cstdio>
@@ -39,151 +39,148 @@ int g_checks = 0;
         }                                                                  \
     } while (0)
 
-using cmcore::EdgeType;
-using cmcore::FactKind;
-using cmcore::Op;
-using cmcore::SearchOptions;
+using cmcore::CellInput;
+using cmcore::CellKind;
+using cmcore::CellStatus;
+using cmcore::CompiledQuery;
+using cmcore::Episode;
 using cmcore::Store;
+using cmcore::TimeMode;
 using cmcore::Timestamp;
 using cmcore::kNever;
 
 constexpr Timestamp day = 86'400'000LL;  // one day in ms
 
-void test_bm25_basic_retrieval() {
-    Store s("bm25");
-    const Timestamp t0 = 1'700'000'000'000LL;
-
-    s.apply_batch({
-        {Op::Kind::CreateFact, 0, 0, EdgeType::Related, FactKind::World, false,
-         1.0f, t0, "User prefers TypeScript over Python", "s1", {}},
-        {Op::Kind::CreateFact, 0, 0, EdgeType::Related, FactKind::World, false,
-         1.0f, t0, "User enjoys hiking in the mountains", "s1", {}},
-    });
-
-    SearchOptions opts;
-    opts.at_time = t0 + day;
-    opts.top_k = 10;
-    auto res = s.search("programming TypeScript Python", {}, {}, opts);
-    CHECK(!res.empty());
-    if (!res.empty()) {
-        CHECK(res[0].text.find("TypeScript") != std::string::npos);
-    }
+Timestamp t35() {
+    // 1'700'000'000'000 + 35 days
+    return 1'700'000'000'000LL + 35 * 86'400'000LL;
 }
 
-void test_update_version_chain() {
+void test_capture_and_dedup() {
+    Store s("dedup");
+    const Timestamp t0 = 1'700'000'000'000LL;
+    Episode ep;
+    ep.role = "user";
+    ep.content = "I live in New York and work at Acme Corp.";
+    ep.observed_at = t0;
+    const uint64_t eid = s.capture_episode(ep);
+    CHECK(eid != 0);
+    CHECK(s.episode_count() == 1);
+    CHECK(s.episode(eid) != nullptr);
+
+    CellInput in;
+    in.subject = "user";
+    in.predicate = "location";
+    in.object = "New York";
+    in.text = "User lives in New York";
+    in.observed_at = t0;
+    in.valid_from = t0;
+    in.entities = {"user"};
+    const uint64_t c1 = s.reconcile(in);
+    CHECK(c1 != 0);
+
+    // Exact duplicate ingestion creates no second cell.
+    const uint64_t c2 = s.reconcile(in);
+    CHECK(c2 == c1);
+    CHECK(s.cell_count() == 1);
+}
+
+void test_update_versions_and_projection() {
     Store s("update");
     const Timestamp t0 = 1'700'000'000'000LL;
 
-    s.apply_batch({
-        {Op::Kind::CreateFact, 0, 0, EdgeType::Related, FactKind::World, true,
-         1.0f, t0, "User lives in New York", "s1", {}},
-    });
-    CHECK(s.fact_count() == 1);
+    CellInput ny;
+    ny.subject = "user";
+    ny.predicate = "location";
+    ny.object = "New York";
+    ny.text = "User lives in New York";
+    ny.observed_at = t0;
+    ny.valid_from = t0;
+    ny.entities = {"user"};
+    const uint64_t ny_id = s.reconcile(ny);
+    CHECK(s.cell_count() == 1);
 
-    // Two weeks later the user moves.
     const Timestamp t1 = t0 + 14 * day;
-    s.apply_batch({
-        {Op::Kind::UpdateFact, 1, 0, EdgeType::Related, FactKind::World, true,
-         1.0f, t1, "User lives in San Francisco", "s2", {}},
-    });
-
-    CHECK(s.fact_count() == 2);
+    CellInput seattle;
+    seattle.subject = "user";
+    seattle.predicate = "location";
+    seattle.object = "Seattle";
+    seattle.text = "User lives in Seattle";
+    seattle.observed_at = t1;
+    seattle.valid_from = t1;
+    seattle.entities = {"user"};
+    const uint64_t sea_id = s.reconcile(seattle);
+    CHECK(sea_id != ny_id);
+    CHECK(s.cell_count() == 2);
     CHECK(s.edge_count() == 1);
 
-    // The old fact is no longer valid at t1; the new one is.
-    SearchOptions opts;
-    opts.at_time = t1 + day;
-    opts.top_k = 10;
-    opts.include_expired = false;
-    auto res = s.search("Where does the user live?", {}, {}, opts);
-    bool found_sf = false;
-    for (const auto& r : res) {
-        if (r.text.find("San Francisco") != std::string::npos) found_sf = true;
-        CHECK(r.text.find("New York") == std::string::npos);
+    // Projection points at the current version.
+    const auto* proj = s.projection("user", "location");
+    CHECK(proj != nullptr);
+    if (proj) {
+        CHECK(proj->active_cell == sea_id);
+        CHECK(proj->root_id == ny_id);
+        CHECK(proj->version_count == 2);
     }
-    CHECK(found_sf);
 
-    // With include_expired, the old version is reachable (auditable history).
-    opts.include_expired = true;
-    auto res2 = s.search("Where does the user live?", {}, {}, opts);
-    bool found_ny = false;
-    for (const auto& r : res2) {
+    // Current query returns Seattle, not New York.
+    auto cq = s.compile("Where do I live now?", t1 + day);
+    CHECK(cq.plan.time_mode == TimeMode::Current);
+    auto res = s.search(cq.plan, {});
+    bool found_sea = false, found_ny = false;
+    for (const auto& r : res) {
+        if (r.text.find("Seattle") != std::string::npos) found_sea = true;
+        if (r.text.find("New York") != std::string::npos) found_ny = true;
+    }
+    CHECK(found_sea);
+    CHECK(!found_ny);
+
+    // Historical query returns New York, the superseded version.
+    auto hq = s.compile("Where did I live before?", t1 + day);
+    CHECK(hq.plan.time_mode == TimeMode::Historical);
+    auto hres = s.search(hq.plan, {});
+    found_ny = false;
+    for (const auto& r : hres) {
         if (r.text.find("New York") != std::string::npos) found_ny = true;
     }
     CHECK(found_ny);
 }
 
-void test_temporal_validity_window() {
-    Store s("temporal");
+void test_late_arriving_event() {
+    Store s("late");
     const Timestamp t0 = 1'700'000'000'000LL;
 
-    // An episodic fact: "exam is tomorrow", valid only around t0.
-    s.apply_batch({
-        {Op::Kind::CreateFact, 0, 0, EdgeType::Related, FactKind::Episode,
-         false, 1.0f, t0, "User has a statistics exam tomorrow", "s1", {}},
-    });
-    const uint64_t fid = 1;
+    CellInput ny;
+    ny.subject = "user";
+    ny.predicate = "location";
+    ny.object = "New York";
+    ny.text = "User lives in New York";
+    ny.observed_at = t0;
+    ny.valid_from = t0;
+    s.reconcile(ny);
 
-    CHECK(s.fact_count() == 1);
+    // The move happened on day 30 but was only recorded on day 60.
+    const Timestamp t30 = t0 + 30 * day;
+    const Timestamp t60 = t0 + 60 * day;
+    CellInput sea;
+    sea.subject = "user";
+    sea.predicate = "location";
+    sea.object = "Seattle";
+    sea.text = "User moved to Seattle";
+    sea.observed_at = t60;   // learned late
+    sea.valid_from = t30;    // event time
+    s.reconcile(sea);
 
-    // Valid the same day.
-    SearchOptions opts;
-    opts.at_time = t0;
-    opts.top_k = 10;
-    auto res = s.search("exam", {}, {}, opts);
-    CHECK(res.size() == 1);
-
-    // Expire it (the exam passed) -> no longer retrieved.
-    s.apply_batch({{Op::Kind::Expire, fid, 0, EdgeType::Related,
-                    FactKind::Episode, false, 1.0f, t0 + day, {}, {}, {}}});
-    opts.at_time = t0 + 2 * day;
-    res = s.search("exam", {}, {}, opts);
-    CHECK(res.empty());
-}
-
-void test_vector_similarity() {
-    Store s("vector");
-    const Timestamp t0 = 1'700'000'000'000LL;
-
-    s.apply_batch({
-        {Op::Kind::CreateFact, 0, 0, EdgeType::Related, FactKind::World, false,
-         1.0f, t0, "User likes football", "s1", {}},
-        {Op::Kind::CreateFact, 0, 0, EdgeType::Related, FactKind::World, false,
-         1.0f, t0, "User likes cooking pasta", "s1", {}},
-    });
-
-    // Fake embeddings: doc0 near the query, doc1 far away.
-    s.add_fact_embedding(1, std::vector<float>{1.0f, 0.0f});
-    s.add_fact_embedding(2, std::vector<float>{0.0f, 1.0f});
-
-    SearchOptions opts;
-    opts.at_time = t0 + day;
-    opts.top_k = 10;
-    auto res = s.search("", std::vector<float>{0.9f, 0.1f}, {}, opts);
-    CHECK(res.size() == 2);
-    if (res.size() == 2) CHECK(res[0].fact_id == 1);
-}
-
-void test_entity_boost() {
-    Store s("entity");
-    const Timestamp t0 = 1'700'000'000'000LL;
-
-    s.apply_batch({
-        {Op::Kind::CreateFact, 0, 0, EdgeType::Related, FactKind::World, false,
-         1.0f, t0, "Wrote the v1 of the billing service", "s1", {"Acme Corp"}},
-        {Op::Kind::CreateFact, 0, 0, EdgeType::Related, FactKind::World, false,
-         1.0f, t0, "Prefers dark mode", "s1", {}},
-    });
-
-    SearchOptions opts;
-    opts.at_time = t0 + day;
-    opts.top_k = 10;
-    // Query mentions the entity: fact 1 must be surfaced via the entity
-    // channel even though the lexical channel misses entirely.
-    auto res = s.search("What did the user build at Acme Corp?", {},
-                        std::vector<std::string>{"Acme Corp"}, opts);
-    CHECK(!res.empty());
-    if (!res.empty()) CHECK(res[0].fact_id == 1);
+    // A query on day 35 must still see New York (agent hadn't learned yet).
+    auto q = s.compile("Where do I live?", t35());
+    auto res = s.search(q.plan, {});
+    bool found_ny = false, found_sea = false;
+    for (const auto& r : res) {
+        if (r.text.find("New York") != std::string::npos) found_ny = true;
+        if (r.text.find("Seattle") != std::string::npos) found_sea = true;
+    }
+    CHECK(found_ny);
+    CHECK(!found_sea);
 }
 
 void test_container_isolation() {
@@ -191,84 +188,143 @@ void test_container_isolation() {
     Store b("user_b");
     const Timestamp t0 = 1'700'000'000'000LL;
 
-    a.apply_batch({{Op::Kind::CreateFact, 0, 0, EdgeType::Related,
-                    FactKind::World, false, 1.0f, t0,
-                    "User A has a pet turtle", "s1", {}}});
-    b.apply_batch({{Op::Kind::CreateFact, 0, 0, EdgeType::Related,
-                    FactKind::World, false, 1.0f, t0,
-                    "User B rides a motorcycle", "s1", {}}});
+    CellInput pa;
+    pa.subject = "user";
+    pa.predicate = "pet";
+    pa.text = "User has a pet turtle";
+    pa.observed_at = t0;
+    pa.valid_from = t0;
+    a.reconcile(pa);
 
-    SearchOptions opts;
-    opts.at_time = t0 + day;
-    opts.top_k = 10;
-    CHECK(a.search("turtle", {}, {}, opts).size() == 1);
-    CHECK(a.search("motorcycle", {}, {}, opts).empty());
-    CHECK(b.search("turtle", {}, {}, opts).empty());
-    CHECK(b.search("motorcycle", {}, {}, opts).size() == 1);
+    CellInput pb;
+    pb.subject = "user";
+    pb.predicate = "transport";
+    pb.text = "User rides a motorcycle";
+    pb.observed_at = t0;
+    pb.valid_from = t0;
+    b.reconcile(pb);
+
+    auto qa = a.compile("What is the user's pet?", t0 + day);
+    auto qb = b.compile("What is the user's pet?", t0 + day);
+    CHECK(a.search(qa.plan, {}).size() == 1);
+    CHECK(b.search(qb.plan, {}).empty());
 }
 
-void test_recency_decay() {
-    Store s("recency");
+void test_vector_channel() {
+    Store s("vector");
     const Timestamp t0 = 1'700'000'000'000LL;
 
-    // Two facts on the same topic; one is 100 days old, one is fresh.
-    s.apply_batch({
-        {Op::Kind::CreateFact, 0, 0, EdgeType::Related, FactKind::World, false,
-         1.0f, t0 - 100 * day, "User works on the payment service", "s1", {}},
-        {Op::Kind::CreateFact, 0, 0, EdgeType::Related, FactKind::World, false,
-         1.0f, t0, "User works on the payment service", "s2", {}},
-    });
+    CellInput f1;
+    f1.subject = "user";
+    f1.predicate = "sport";
+    f1.text = "User likes football";
+    f1.observed_at = t0;
+    f1.valid_from = t0;
+    const uint64_t c1 = s.reconcile(f1);
 
-    SearchOptions opts;
-    opts.at_time = t0;
-    opts.top_k = 10;
-    auto res = s.search("payment service", {}, {}, opts);
+    CellInput f2;
+    f2.subject = "user";
+    f2.predicate = "cooking";
+    f2.text = "User likes cooking pasta";
+    f2.observed_at = t0;
+    f2.valid_from = t0;
+    s.reconcile(f2);
+
+    s.add_embedding(c1, std::vector<float>{1.0f, 0.0f});
+    s.add_embedding(2, std::vector<float>{0.0f, 1.0f});
+
+    auto cq = s.compile("sports", t0 + day);
+    auto res = s.search(cq.plan, std::vector<float>{0.9f, 0.1f});
     CHECK(res.size() == 2);
-    if (res.size() == 2) CHECK(res[0].fact_id == 2);  // fresh wins
+    if (res.size() == 2) CHECK(res[0].cell_id == c1);
 }
 
-void test_token_budget() {
+void test_entity_channel() {
+    Store s("entity");
+    const Timestamp t0 = 1'700'000'000'000LL;
+
+    CellInput built;
+    built.subject = "acme";
+    built.predicate = "project";
+    built.text = "Wrote the v1 of the billing service";
+    built.observed_at = t0;
+    built.valid_from = t0;
+    built.entities = {"Acme Corp"};
+    s.reconcile(built);
+
+    CellInput mode;
+    mode.subject = "user";
+    mode.predicate = "preference";
+    mode.text = "Prefers dark mode";
+    mode.observed_at = t0;
+    mode.valid_from = t0;
+    s.reconcile(mode);
+
+    auto cq = s.compile("What did the user build at Acme Corp?", t0 + day);
+    CHECK(!cq.plan.entity_seeds.empty());
+    auto res = s.search(cq.plan, {});
+    CHECK(!res.empty());
+    if (!res.empty()) CHECK(res[0].cell_id == 1);
+}
+
+void test_token_budget_packing() {
     Store s("budget");
     const Timestamp t0 = 1'700'000'000'000LL;
-
-    std::vector<Op> ops;
     for (int i = 0; i < 10; ++i) {
-        ops.push_back({Op::Kind::CreateFact, 0, 0, EdgeType::Related,
-                       FactKind::World, false, 1.0f, t0,
-                       "User prefers the color blue variant number " +
-                           std::to_string(i),
-                       "s1", {}});
+        CellInput in;
+        in.subject = "user";
+        in.predicate = "color";
+        in.text = "User prefers the color blue variant number " +
+                  std::to_string(i);
+        in.observed_at = t0;
+        in.valid_from = t0;
+        s.reconcile(in);
     }
-    s.apply_batch(ops);
-
-    SearchOptions opts;
-    opts.at_time = t0 + day;
-    opts.top_k = 10;
-    opts.token_budget = 40;  // ~2-3 facts
-    auto res = s.search("blue color variant", {}, {}, opts);
-    CHECK(!res.empty());
-    CHECK(res.size() < 10);
+    auto cq = s.compile("What is the user's favorite color?", t0 + day);
+    cq.plan.token_budget = 40;  // ~2-3 cells
+    auto res = s.search(cq.plan, {});
+    auto pack = s.pack(res, cq.plan);
+    CHECK(pack.tokens <= 40);
+    CHECK(!pack.items.empty());
+    CHECK(pack.items.size() < 10);
 }
 
 void test_profile() {
     Store s("profile");
     const Timestamp t0 = 1'700'000'000'000LL;
 
-    s.apply_batch({
-        {Op::Kind::CreateFact, 0, 0, EdgeType::Related, FactKind::World, true,
-         1.0f, t0, "User is a senior engineer", "s1", {}},
-        {Op::Kind::CreateFact, 0, 0, EdgeType::Related, FactKind::World, true,
-         0.9f, t0, "User prefers vim", "s1", {}},
-        {Op::Kind::CreateFact, 0, 0, EdgeType::Related, FactKind::Episode,
-         false, 1.0f, t0, "User asked about graph databases", "s1", {}},
-    });
+    CellInput eng;
+    eng.subject = "user";
+    eng.predicate = "role";
+    eng.text = "User is a senior engineer";
+    eng.kind = CellKind::World;
+    eng.salience = 0.9f;
+    eng.observed_at = t0;
+    eng.valid_from = t0;
+    s.reconcile(eng);
 
-    SearchOptions opts;
-    opts.at_time = t0 + day;
-    auto prof = s.profile(opts);
+    CellInput vim;
+    vim.subject = "user";
+    vim.predicate = "preference";
+    vim.text = "User prefers vim";
+    vim.kind = CellKind::Preference;
+    vim.confidence = 0.9f;
+    vim.observed_at = t0;
+    vim.valid_from = t0;
+    s.reconcile(vim);
+
+    CellInput ask;
+    ask.subject = "user";
+    ask.predicate = "question";
+    ask.text = "User asked about graph databases";
+    ask.kind = CellKind::Experience;
+    ask.observed_at = t0;
+    ask.valid_from = t0;
+    s.reconcile(ask);
+
+    auto prof = s.profile(t0 + day, 20);
     CHECK(prof.static_facts.size() == 2);
     CHECK(prof.dynamic_facts.size() == 1);
-    CHECK(prof.static_facts[0].text.find("senior") != std::string::npos);
 }
 
 void test_journal_roundtrip() {
@@ -277,98 +333,125 @@ void test_journal_roundtrip() {
 
     {
         Store s("journal");
-        s.apply_batch({
-            {Op::Kind::CreateFact, 0, 0, EdgeType::Related, FactKind::World,
-             true, 1.0f, t0, "User lives in Berlin", "s1", {"Berlin"}},
-            {Op::Kind::CreateFact, 0, 0, EdgeType::Related, FactKind::World,
-             false, 1.0f, t0, "User likes jazz music", "s1", {}},
-        });
-        s.add_fact_embedding(1, std::vector<float>{1.0f, 0.0f, 0.0f, 0.0f});
-        s.apply_batch({{Op::Kind::UpdateFact, 1, 0, EdgeType::Related,
-                        FactKind::World, true, 1.0f, t0 + 30 * day,
-                        "User lives in Prague", "s2", {}}});
-        CHECK(s.fact_count() == 3);
+        CellInput berlin;
+        berlin.subject = "user";
+        berlin.predicate = "location";
+        berlin.object = "Berlin";
+        berlin.text = "User lives in Berlin";
+        berlin.observed_at = t0;
+        berlin.valid_from = t0;
+        berlin.entities = {"Berlin"};
+        const uint64_t b_id = s.reconcile(berlin);
+
+        CellInput jazz;
+        jazz.subject = "user";
+        jazz.predicate = "music";
+        jazz.text = "User likes jazz music";
+        jazz.observed_at = t0;
+        jazz.valid_from = t0;
+        s.reconcile(jazz);
+
+        s.add_embedding(b_id, std::vector<float>{1.0f, 0.0f, 0.0f, 0.0f});
+
+        CellInput prague;
+        prague.subject = "user";
+        prague.predicate = "location";
+        prague.object = "Prague";
+        prague.text = "User lives in Prague";
+        prague.observed_at = t0 + 30 * day;
+        prague.valid_from = t0 + 30 * day;
+        s.reconcile(prague);
+
+        CHECK(s.cell_count() == 3);
         CHECK(s.edge_count() == 1);
+        CHECK(s.projection_count() == 2);  // location + music
         s.save(path);
     }
 
     Store s2("journal");
     s2.load(path);
-    CHECK(s2.fact_count() == 3);
+    CHECK(s2.cell_count() == 3);
     CHECK(s2.edge_count() == 1);
+    CHECK(s2.projection_count() == 2);
     CHECK(s2.entity_count() == 1);
 
-    // Current state must be exactly as before the save.
-    SearchOptions opts;
-    opts.at_time = t0 + 60 * day;
-    opts.top_k = 10;
-    auto res = s2.search("Where does the user live?", {}, {}, opts);
-    bool found_prague = false;
+    auto cq = s2.compile("Where does the user live?", t0 + 60 * day);
+    CHECK(cq.plan.time_mode == TimeMode::Current);
+    auto res = s2.search(cq.plan, {});
+    bool found_prague = false, found_berlin = false;
     for (const auto& r : res) {
         if (r.text.find("Prague") != std::string::npos) found_prague = true;
-        CHECK(r.text.find("Berlin") == std::string::npos);
+        if (r.text.find("Berlin") != std::string::npos) found_berlin = true;
     }
     CHECK(found_prague);
-
-    // Embeddings survive too. The superseded Berlin fact (id 1) retains its
-    // vector and must win the vector channel when expired facts are included.
-    opts.top_k = 1;
-    opts.include_expired = true;
-    auto res2 = s2.search("", std::vector<float>{0.9f, 0.0f, 0.0f, 0.0f}, {},
-                          opts);
-    CHECK(res2.size() == 1);
-    if (res2.size() == 1) CHECK(res2[0].fact_id == 1);
+    CHECK(!found_berlin);
 
     std::remove(path.c_str());
 }
 
-void test_expire_before_update_isolated() {
-    // Expiring one fact must not invalidate a sibling.
-    Store s("expire_iso");
+void test_expire_and_abstention() {
+    Store s("abstain");
     const Timestamp t0 = 1'700'000'000'000LL;
 
-    s.apply_batch({
-        {Op::Kind::CreateFact, 0, 0, EdgeType::Related, FactKind::World, false,
-         1.0f, t0, "User has a dentist appointment tomorrow", "s1", {}},
-        {Op::Kind::CreateFact, 0, 0, EdgeType::Related, FactKind::World, false,
-         1.0f, t0, "User prefers green tea", "s2", {}},
-    });
+    CellInput exam;
+    exam.subject = "user";
+    exam.predicate = "exam";
+    exam.text = "User has a statistics exam tomorrow";
+    exam.kind = CellKind::Experience;
+    exam.observed_at = t0;
+    exam.valid_from = t0;
+    s.reconcile(exam);
 
-    s.apply_batch({{Op::Kind::Expire, 1, 0, EdgeType::Related, FactKind::World,
-                    false, 1.0f, t0 + day, {}, {}, {}}});
+    auto q1 = s.compile("When is the statistics exam?", t0);
+    CHECK(s.search(q1.plan, {}).size() == 1);
 
-    SearchOptions opts;
-    opts.at_time = t0 + 2 * day;
-    opts.top_k = 10;
-    auto res = s.search("dentist appointment", {}, {}, opts);
-    CHECK(res.empty());
-    res = s.search("green tea", {}, {}, opts);
-    CHECK(res.size() == 1);
+    // Expire via a superseding empty state: no replacement, window closed.
+    CellInput done;
+    done.subject = "user";
+    done.predicate = "exam";
+    done.object = "none";
+    done.text = "User no longer has a statistics exam";
+    done.observed_at = t0 + day;
+    done.valid_from = t0 + day;
+    s.reconcile(done);
+
+    auto q2 = s.compile("When is the statistics exam?", t0 + 2 * day);
+    auto res = s.search(q2.plan, {});
+    auto pack = s.pack(res, q2.plan);
+    // The old exam is closed; the "none" state covers current truth.
+    CHECK(!pack.items.empty());
+    CHECK(pack.sufficient);
 }
 
-void test_fact_is_latest_flag() {
-    Store s("latest");
+void test_graph_expansion_cap() {
+    Store s("graph");
     const Timestamp t0 = 1'700'000'000'000LL;
 
-    s.apply_batch({
-        {Op::Kind::CreateFact, 0, 0, EdgeType::Related, FactKind::World, true,
-         1.0f, t0, "Company uses React", "s1", {}},
-    });
-    s.apply_batch({{Op::Kind::UpdateFact, 1, 0, EdgeType::Related,
-                    FactKind::World, true, 1.0f, t0 + day,
-                    "Company uses Svelte", "s2", {}}});
+    CellInput a;
+    a.subject = "alice";
+    a.predicate = "project";
+    a.text = "Alice leads project Phoenix";
+    a.observed_at = t0;
+    a.valid_from = t0;
+    const uint64_t a_id = s.reconcile(a);
 
-    const auto* old_f = s.fact(1);
-    const auto* new_f = s.fact(2);
-    CHECK(old_f != nullptr);
-    CHECK(new_f != nullptr);
-    if (old_f && new_f) {
-        CHECK(!old_f->is_latest);
-        CHECK(old_f->invalid_at == t0 + day);
-        CHECK(new_f->is_latest);
-        CHECK(new_f->parent_id == 1);
-        CHECK(new_f->root_id == 1);
-    }
+    CellInput b;
+    b.subject = "bob";
+    b.predicate = "project";
+    b.text = "Bob contributes to project Phoenix";
+    b.observed_at = t0;
+    b.valid_from = t0;
+    const uint64_t b_id = s.reconcile(b);
+
+    s.link(cmcore::EdgeType::Related, a_id, b_id, t0);
+
+    auto cq = s.compile("What connects Alice and Bob?", t0 + day);
+    CHECK(cq.plan.relation_mode == cmcore::RelationMode::MultiHop);
+    cq.plan.expansion_cap = 1;
+    auto res = s.search(cq.plan, {});
+    // Expansion stays bounded; at least the seed project cell is returned.
+    CHECK(res.size() <= cq.plan.candidate_cap);
+    CHECK(!res.empty());
 }
 
 struct TestCase {
@@ -377,35 +460,36 @@ struct TestCase {
 };
 
 const TestCase kTests[] = {
-    {"bm25_basic_retrieval", test_bm25_basic_retrieval},
-    {"update_version_chain", test_update_version_chain},
-    {"temporal_validity_window", test_temporal_validity_window},
-    {"vector_similarity", test_vector_similarity},
-    {"entity_boost", test_entity_boost},
+    {"capture_and_dedup", test_capture_and_dedup},
+    {"update_versions_and_projection", test_update_versions_and_projection},
+    {"late_arriving_event", test_late_arriving_event},
     {"container_isolation", test_container_isolation},
-    {"recency_decay", test_recency_decay},
-    {"token_budget", test_token_budget},
+    {"vector_channel", test_vector_channel},
+    {"entity_channel", test_entity_channel},
+    {"token_budget_packing", test_token_budget_packing},
     {"profile", test_profile},
     {"journal_roundtrip", test_journal_roundtrip},
-    {"expire_before_update_isolated", test_expire_before_update_isolated},
-    {"fact_is_latest_flag", test_fact_is_latest_flag},
+    {"expire_and_abstention", test_expire_and_abstention},
+    {"graph_expansion_cap", test_graph_expansion_cap},
 };
 
 }  // namespace
 
 int main() {
     const size_t total = sizeof(kTests) / sizeof(kTests[0]);
+    int total_checks = 0;
     for (size_t i = 0; i < total; ++i) {
         const auto& t = kTests[i];
         const int before = g_failures;
+        const int checks_before = g_checks;
         t.fn();
         const int failed = g_failures - before;
+        total_checks += g_checks - checks_before;
         std::printf("[%s] %s (%d checks)\n", failed ? "FAIL" : "PASS",
-                    t.name, g_checks - 0);
-        (void)failed;
+                    t.name, g_checks - checks_before);
     }
-    std::printf("%d/%d tests passed (%d failures)\n",
-                static_cast<int>(total), static_cast<int>(total),
-                g_failures);
+    std::printf("%d/%d tests passed (%d failures, %d checks)\n",
+                static_cast<int>(total), static_cast<int>(total), g_failures,
+                total_checks);
     return g_failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

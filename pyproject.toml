@@ -24,11 +24,12 @@ contextmemory = "contextmemory.cli:main"
 
 [tool.scikit-build]
 cmake.source-dir = "core"
-wheel.packages = ["src/contextmemory"]
+wheel.packages = ["contextmemory"]
 build-dir = "build/{wheel_tag}"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]
+include = ["contextmemory*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
