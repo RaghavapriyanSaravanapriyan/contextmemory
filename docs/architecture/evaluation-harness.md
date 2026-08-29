@@ -13,6 +13,9 @@ src/contextmemory/eval/
   runner.py     chronological replay-and-answer loop, timing on both paths
   scoring.py    deterministic proxy + official-style LLM judge
   systems.py    reference baselines (full-history, recency window)
+  dimensions.py custom dimensions the benchmarks don't measure
+                (write precision, evolution, forgetting)
+  latency.py    deterministic latency bench with a null reader
 ```
 
 ## Protocol seams
@@ -47,12 +50,46 @@ src/contextmemory/eval/
 ## CLI
 
 ```
-contextmemory --data <longmemeval.json> --system <name> \
-  --reader-api-base <base> --reader-model <model> --out <run.jsonl>
+contextmemory eval --data <longmemeval.json> --system <name> \
+  --reader-api-base <base> --reader-model <model> \
+  [--judge-model <model>] --out <run.jsonl>
+contextmemory dims --system <name> --reader-api-base <base> \
+  --reader-api-key <key> --reader-model <model>
+contextmemory bench --system <name> [--sessions N]
 ```
 
 Records question_id, hypothesis, judged label, and ingest/answer timing per
 instance, which is the raw material for `reports/runs/`.
+
+## Custom dimensions (`dims`)
+
+`dimensions.py` runs fully-controlled synthetic timelines whose ground truth
+is known, so scores are reproducible without a dataset:
+
+* **write-precision** — the write path must store what was actually said, and
+  the read path must abstain rather than fabricate when asked about something
+  never discussed. Recall-style probes are scored with `deterministic_match`;
+  abstention probes with `is_abstention` (a curated marker list, a proxy for
+  the official abstention prompt).
+* **evolution** — facts must track updates and contradictions over time:
+  current value vs historical value, no staleness (a system stuck on an old
+  employer fails the current-state probes).
+* **forgetting** — stable core facts must survive consolidation while
+  superseded facts stop contaminating current answers (long noisy timeline,
+  then durable-name and current/historical-city probes).
+
+`run_dimensions(scenarios, system_factory)` returns a per-dimension
+`DimensionReport` with overall accuracy. These are development proxies;
+published numbers come from an LLM judge.
+
+## Deterministic latency bench (`bench`)
+
+`latency.py` measures the memory system's *own* deterministic cost by running
+ingest and answer against a `NullReader` that returns instantly, so timings
+exclude LLM/network time. `bench_latency(system_factory, ...)` replays a
+deterministic synthetic corpus and reports p50/p95 ingest and answer latency
+in milliseconds. On one rig the cross-system comparison is the signal; the
+interactive bar is sub-200ms p50 on the read path.
 
 ## Latency measurement
 

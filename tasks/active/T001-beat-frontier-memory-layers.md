@@ -44,7 +44,10 @@ You cannot beat what you cannot measure. The measurement rig comes first.
   smoke run against the oracle dataset verified.
 - M1 Measurement rig: LongMemEval replay harness + custom-dimensions harness
   (write precision, evolution, forgetting) + deterministic latency bench.
-  **Harness core done; custom-dimensions harness + latency bench pending.**
+  **DONE** (2026-08-29): replay harness; `dims` scenarios (synthetic, known
+  ground truth, abstention-vs-fabrication scoring) and `bench` (null-reader
+  deterministic p50/p95) via CLI subcommands `eval`/`dims`/`bench`; `eval`
+  gained official-style `--judge-model`. 38 tests green, ruff clean.
 - M2 Baselines: full-history reader baseline, Mem0, Zep/Graphiti, Letta
   adapters on one rig, identical reader model.
 - M3 ContextMemory architecture v1: model-agnostic incremental write path

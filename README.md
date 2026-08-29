@@ -31,13 +31,26 @@ and answers questions with a model-agnostic reader client (any
 OpenAI-compatible endpoint: frontier APIs, vLLM, Ollama, LM Studio).
 
 ```bash
-uv run contextmemory \
+uv run contextmemory eval \
   --data benchmarks/data/longmemeval_oracle.json \
   --system full-history \
   --reader-api-base https://api.openai.com/v1 \
   --reader-api-key $OPENAI_API_KEY \
   --reader-model gpt-4o-mini \
   --out reports/runs/run.jsonl
+```
+
+Add `--judge-model <model>` to score with an LLM judge using the official
+LongMemEval prompts (for published numbers). The other subcommands:
+
+```bash
+uv run contextmemory dims --system full-history \
+  --reader-api-base https://api.openai.com/v1 \
+  --reader-api-key $OPENAI_API_KEY --reader-model gpt-4o-mini
+# custom dimensions: write precision, evolution, forgetting
+
+uv run contextmemory bench --system full-history
+# deterministic ingest/answer latency with a null reader
 ```
 
 Download the LongMemEval data first:
