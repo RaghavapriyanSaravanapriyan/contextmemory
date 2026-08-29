@@ -16,12 +16,28 @@ selected and used for extraction and answer generation.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import time
 from typing import Any
 
 import httpx
+
+_THINK_BLOCK = re.compile(r"<think>.*?</think>|<think>.*$|</think>", re.DOTALL)
+
+
+def strip_thinking(text: str) -> str:
+    """Remove Qwen3-style ``<think>`` blocks from visible output.
+
+    Ollama's ``think: false`` disables the separate ``thinking`` field, but
+    thinking models (qwen3, ...) may still emit reasoning inline in
+    ``content`` — wrapped in tags or as an orphaned ``</think>``. Strip the
+    tagged reasoning before showing or scoring a response. Untagged
+    freeform reasoning cannot be detected reliably; it should not be hidden
+    silently.
+    """
+    return _THINK_BLOCK.sub("", text).strip()
 
 DEFAULT_BASE_URL = "http://localhost:11434"
 _DEFAULT_API_KEY = "ollama"
@@ -87,7 +103,7 @@ class OllamaChatClient:
         resp = self._client.post("/api/chat", json=payload)
         resp.raise_for_status()
         message = resp.json().get("message", {}) or {}
-        return (message.get("content", "") or "").strip()
+        return strip_thinking(message.get("content", "") or "")
 
     def chat_with_tools(
         self,
@@ -111,7 +127,10 @@ class OllamaChatClient:
             payload["options"]["num_predict"] = cap
         resp = self._client.post("/api/chat", json=payload)
         resp.raise_for_status()
-        return resp.json().get("message", {}) or {}
+        message = resp.json().get("message", {}) or {}
+        content = strip_thinking(message.get("content") or "")
+        message["content"] = content
+        return message
 
     def close(self) -> None:
         self._client.close()

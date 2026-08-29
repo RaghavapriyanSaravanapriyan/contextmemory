@@ -248,7 +248,7 @@ def _cmd_chat(args: argparse.Namespace) -> int:
     from contextmemory.engine.ollama import OllamaManager
     from contextmemory.mcp import _TOOLS, MCPServer
 
-    manager = OllamaManager(args.url)
+    manager = OllamaManager(args.url, timeout=args.timeout)
     if not manager.start_managed():
         print(f"Ollama unavailable: {manager.last_error}", file=sys.stderr)
         return 1
@@ -298,26 +298,32 @@ def _cmd_chat(args: argparse.Namespace) -> int:
                 retrieved = memory._dispatch("recall", {"query": prompt})
                 prompt += f"\n\n[ContextMemory retrieved memory:\n{retrieved}]"
             messages.append({"role": "user", "content": prompt})
-            for _ in range(4):
-                message = reader.chat_with_tools(messages, tools,
-                                                  max_tokens=args.max_tokens)
-                messages.append(message)
-                calls = message.get("tool_calls") or []
-                if not calls:
-                    print(f"ollama> {(message.get('content') or '').strip()}\n")
-                    break
-                for call in calls:
-                    fn = call.get("function", {})
-                    name = fn.get("name", "")
-                    raw_args = fn.get("arguments", {}) or {}
-                    call_args = (json.loads(raw_args) if isinstance(raw_args, str)
-                                 else raw_args)
-                    result = memory._dispatch(name, call_args)
-                    messages.append({
-                        "role": "tool", "content": result,
-                    })
-            else:
-                print("ollama> Tool loop limit reached; please try again.\n")
+            try:
+                for _ in range(4):
+                    message = reader.chat_with_tools(
+                        messages, tools, max_tokens=args.max_tokens
+                    )
+                    messages.append(message)
+                    calls = message.get("tool_calls") or []
+                    if not calls:
+                        answer = (message.get("content") or "").strip()
+                        print(f"ollama> {answer or '(no response)'}\n")
+                        break
+                    for call in calls:
+                        fn = call.get("function", {})
+                        name = fn.get("name", "")
+                        raw_args = fn.get("arguments", {}) or {}
+                        call_args = (
+                            json.loads(raw_args)
+                            if isinstance(raw_args, str)
+                            else raw_args
+                        )
+                        result = memory._dispatch(name, call_args)
+                        messages.append({"role": "tool", "content": result})
+                else:
+                    print("ollama> Tool loop limit reached; please try again.\n")
+            except httpx.HTTPError as exc:
+                print(f"ollama> request failed: {exc}\n")
     finally:
         reader.close()
         manager.close()
@@ -417,7 +423,23 @@ def main(argv: list[str] | None = None) -> int:
                         help="Ollama model (default: first installed model)")
     p_chat.add_argument("--url", default="http://localhost:11434")
     p_chat.add_argument("--container", default="brain")
-    p_chat.add_argument("--max-tokens", type=int, default=512)
+    p_chat.add_argument(
+        "--timeout",
+        type=float,
+        default=300.0,
+        help="per-turn request timeout in seconds (local CPU inference "
+             "of long generations can exceed the 120s manager default)",
+    )
+    p_chat.add_argument(
+        "--max-tokens",
+        type=int,
+        default=4096,
+        help=(
+            "generation budget per turn; thinking models (qwen3, ...) spend "
+            "tokens on reasoning before answering, so small values like "
+            "512 truncate them into silence"
+        ),
+    )
     p_chat.set_defaults(func=_cmd_chat)
 
     args = parser.parse_args(argv)
