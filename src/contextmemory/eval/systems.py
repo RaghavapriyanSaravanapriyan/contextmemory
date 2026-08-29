@@ -5,6 +5,8 @@ These are baselines, not the production system. They define the floor:
   context), the strongest a context-window agent can do.
 * ``RecencyWindowSystem`` -- the common naive approach: keep the most
   recent N sessions and nothing else.
+* ``CoreMemorySystem`` -- the production memory layer: extraction write
+  path (pluggable) + deterministic C++ store read path.
 """
 
 from __future__ import annotations
@@ -80,3 +82,36 @@ class RecencyWindowSystem(MemorySystem):
             [{"role": "user", "content": prompt}],
             temperature=0.0,
         )
+
+
+class CoreMemorySystem(MemorySystem):
+    """The production memory layer as an eval harness system.
+
+    Write path: extract coarse facts per session (``extractor``; default
+    ``NullExtractor`` for deterministic runs), embed, store in the C++ core.
+    Read path: deterministic hybrid retrieval + reader answer generation.
+    """
+
+    def __init__(
+        self,
+        reader: ReaderClient,
+        *,
+        extractor=None,
+        embedder=None,
+        container_tag: str = "eval",
+    ) -> None:
+        from ..engine.extractor import NullExtractor
+        from ..engine.memory import MemoryEngine
+
+        self._reader = reader
+        self._engine = MemoryEngine(
+            container_tag=container_tag,
+            extractor=extractor or NullExtractor(),
+            embedder=embedder,
+        )
+
+    def ingest(self, session: Session) -> None:
+        self._engine.ingest(session)
+
+    def answer(self, question: str, question_date: datetime) -> str:
+        return self._engine.answer(question, question_date, self._reader)

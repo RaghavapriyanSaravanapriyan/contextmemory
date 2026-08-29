@@ -1,11 +1,11 @@
 [build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+requires = ["scikit-build-core>=0.10", "nanobind>=2.0"]
+build-backend = "scikit_build_core.build"
 
 [project]
 name = "contextmemory"
 version = "0.1.0"
-description = "A better persistent memory and context optimization layer for modern agentic systems."
+description = "A graph + temporal memory layer for agentic systems. C++ core, deterministic read path, single-command install."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
@@ -21,6 +21,11 @@ dev = [
 
 [project.scripts]
 contextmemory = "contextmemory.cli:main"
+
+[tool.scikit-build]
+cmake.source-dir = "core"
+wheel.packages = ["src/contextmemory"]
+build-dir = "build/{wheel_tag}"
 
 [tool.setuptools.packages.find]
 where = ["src"]

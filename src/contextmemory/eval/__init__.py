@@ -37,9 +37,10 @@ from .scoring import (
     judge_results,
     score_deterministic,
 )
-from .systems import FullHistorySystem, RecencyWindowSystem
+from .systems import CoreMemorySystem, FullHistorySystem, RecencyWindowSystem
 
 __all__ = [
+    "CoreMemorySystem",
     "DimensionReport",
     "FullHistorySystem",
     "LatencyReport",

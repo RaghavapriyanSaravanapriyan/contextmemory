@@ -22,7 +22,10 @@ import argparse
 import json
 from collections.abc import Callable
 
+from contextmemory.engine.embedder import DeterministicHashEmbedder
+from contextmemory.engine.extractor import LLMExtractor
 from contextmemory.eval import (
+    CoreMemorySystem,
     FullHistorySystem,
     MemorySystem,
     OpenAICompatClient,
@@ -40,6 +43,11 @@ _SYSTEMS: dict[str, Callable[[OpenAICompatClient], MemorySystem]] = {
     "full-history": lambda reader: FullHistorySystem(reader),
     "recency-2": lambda reader: RecencyWindowSystem(reader, window=2),
     "recency-10": lambda reader: RecencyWindowSystem(reader, window=10),
+    "contextmemory": lambda reader: CoreMemorySystem(
+        reader,
+        extractor=LLMExtractor(reader),
+        embedder=DeterministicHashEmbedder(),
+    ),
 }
 
 
