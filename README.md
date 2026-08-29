@@ -186,6 +186,9 @@ cmake -S core -B build/core && cmake --build build/core -j
 
 **Mission and roadmap:** `tasks/active/T001-beat-frontier-memory-layers.md`
 
+**SOTA architecture and hackathon implementation plan:**
+`docs/architecture/2026-08-29-sota-memory-brain-action-plan.md`
+
 ---
 
 *You can't beat what you can't measure. So we measure everything.*

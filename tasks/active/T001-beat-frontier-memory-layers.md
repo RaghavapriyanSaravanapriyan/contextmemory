@@ -53,6 +53,7 @@ You cannot beat what you cannot measure. The measurement rig comes first.
 - M3 ContextMemory architecture v1: model-agnostic incremental write path
   (extraction via pluggable LLM client), temporal store with evolution
   semantics, deterministic read path, consolidation/forgetting.
+  **Architecture plan:** `docs/architecture/2026-08-29-sota-memory-brain-action-plan.md`
 - M4 Iterate: ablate, measure, publish run reports.
 - M5 Benchmark push: LoCoMo, BEAM.
 
