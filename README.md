@@ -58,6 +58,18 @@ whatever is missing, builds the C++ engine, and launches the TUI:
 | Windows (PowerShell) | `.\run.ps1` |
 | Any OS | `python run.py` |
 
+Once installed, `contextmemory` opens the TUI directly:
+
+```bash
+contextmemory              # onboarding → dashboard
+contextmemory --live       # connect to / auto-launch Ollama
+```
+
+The first run walks a short onboarding — **what are you building?** →
+**connect your AI** (it scans your local Ollama models automatically) →
+**MEMORY ONLINE** → the dashboard. Returning runs go straight to the
+dashboard.
+
 **No model, no API key, no database, no cloud** for the offline demo; add
 `--live` and your local model for the full experience.
 
@@ -118,6 +130,11 @@ is what it does under the hood:
 4. **CMake + Ninja** — installed as wheels during the build (no system install).
 5. **Ollama** — only for `--live` mode.
 6. **Python deps + C++ core** — `uv sync` builds the engine.
+
+For AI-tool integrations, `contextmemory mcp` runs the MCP bridge (stdio) and
+exposes `memory` / `recall` / `context` / `forget` to any MCP client — Claude
+Code, Cursor, OpenCode, VS Code, Cline. Config lives in
+`~/.config/contextmemory/config.json` (first-run detection + your choices).
 
 Or install the pieces explicitly:
 
@@ -297,11 +314,14 @@ core/                          C++ ETMC memory engine (the fast part)
   tests/test_core.cpp          dependency-free C++ test suite (11 suites)
 contextmemory/                 the Python package
   core.py                      typed facade over _core
+  config.py                    first-run detection + persisted app config
+  observability.py             real retrieval events + rolling performance
+  mcp.py                       MCP bridge (memory/recall/context/forget)
   engine/                      extractor, embedder, ETMC orchestration, Ollama
   eval/                        benchmark rig (replay, dimensions, latency)
-  tui/                         Textual brain (Live, Timeline, Why, Bench, Health)
+  tui/                         onboarding + dashboard (Textual)
   api.py, cli.py               MemoryClient API + contextmemory CLI
-tests/                         Python test suite (53 tests)
+tests/                         Python test suite (68 tests)
 run.py                         one-command installer + launcher (all OSes)
 run.sh                         macOS/Linux entry point (thin wrapper)
 run.bat, run.ps1               Windows entry points (cmd.exe / PowerShell)
@@ -316,9 +336,11 @@ tasks/active/                  what we're working on
 - ✅ Engine: ETMC core built (capture, reconcile, projections, query compiler,
   evidence packing, persistence)
 - ✅ Measurement rig: benchmark + latency + custom dimensions
-- ✅ TUI: offline scripted demo + live Ollama path
-- ✅ One-command flows: install (`./run.sh`), test (`./scripts/test-all.sh`),
-  benchmark (`contextmemory bench | dims | eval`)
+- ✅ TUI: onboarding → dashboard (Brain, Timeline, Why, Models, Retrieval
+  Live, Performance, Connections, Health)
+- ✅ MCP bridge: `contextmemory mcp` → memory/recall/context/forget
+- ✅ One-command flows: install (`./run.sh`), open (`contextmemory`),
+  test (`./scripts/test-all.sh`), benchmark (`contextmemory bench | dims | eval`)
 - 🔄 Pushing LongMemEval accuracy; Mem0/Zep head-to-head adapters next
 
 **Mission and roadmap:** `tasks/active/T001-beat-frontier-memory-layers.md`
