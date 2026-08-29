@@ -236,9 +236,19 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_mcp(args: argparse.Namespace) -> int:
+    from contextmemory.mcp import main as mcp_main
+
+    return mcp_main(["--container", args.container])
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run memory evaluations.")
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser = argparse.ArgumentParser(
+        description="ContextMemory — memory infrastructure for AI systems.",
+        prog="contextmemory",
+    )
+    # No subcommand → the TUI, which is the product surface.
+    sub = parser.add_subparsers(dest="command")
 
     p_eval = sub.add_parser("eval", help="replay a LongMemEval dataset")
     p_eval.add_argument("--data", required=True, help="LongMemEval JSON data file")
@@ -312,7 +322,19 @@ def main(argv: list[str] | None = None) -> int:
     p_ingest.add_argument("--turn", action="append", required=True)
     p_ingest.set_defaults(func=_cmd_ingest)
 
+    p_mcp = sub.add_parser(
+        "mcp", help="run the MCP server (stdio) for AI tool bridges"
+    )
+    p_mcp.add_argument("--container", default="brain")
+    p_mcp.set_defaults(func=_cmd_mcp)
+
     args = parser.parse_args(argv)
+    if args.command is None:
+        # `contextmemory` with no subcommand → the TUI product surface.
+        return _cmd_demo(argparse.Namespace(
+            live=False, container="brain", url=None, model=None,
+            auto_launch=False,
+        ))
     return args.func(args)
 
 

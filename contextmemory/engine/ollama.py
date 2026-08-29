@@ -150,6 +150,32 @@ class OllamaManager:
             self._models = []
         return self._models
 
+    def model_details(self, refresh: bool = True) -> list[dict]:
+        """Model info straight from Ollama: name, size GB, parameter size.
+
+        Only fields Ollama actually reports are included. Empty list when the
+        server is unreachable.
+        """
+        if not refresh and self._models:
+            pass
+        try:
+            resp = httpx.get(f"{self.base_url}/api/tags", timeout=5.0)
+            resp.raise_for_status()
+            models = resp.json().get("models", [])
+        except (httpx.HTTPError, OSError, KeyError, TypeError, ValueError):
+            return []
+        out = []
+        for m in models:
+            size = int(m.get("size") or 0)
+            details = m.get("details") or {}
+            out.append({
+                "name": m.get("name", ""),
+                "size_gb": round(size / (1024 ** 3), 1) if size else 0.0,
+                "parameter_size": details.get("parameter_size", ""),
+                "quantization": details.get("quantization_level", ""),
+            })
+        return sorted(out, key=lambda d: d["name"])
+
     # --- managed server -----------------------------------------------------
 
     def start_managed(self, wait: float = _SERVE_WAIT_S) -> bool:
