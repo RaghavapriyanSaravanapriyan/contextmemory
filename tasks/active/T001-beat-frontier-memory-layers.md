@@ -38,9 +38,13 @@ You cannot beat what you cannot measure. The measurement rig comes first.
 
 ## Milestones
 
-- M0 Foundation: task, research report, project skeleton, verify.sh. DONE soon.
+- M0 Foundation: task, research report, project skeleton, verify.sh. **DONE**
+  (2026-08-29): pyproject/uv env, `.gitignore`, 18 tests green, ruff clean,
+  CLI (`contextmemory`) with full-history + recency baselines, end-to-end
+  smoke run against the oracle dataset verified.
 - M1 Measurement rig: LongMemEval replay harness + custom-dimensions harness
   (write precision, evolution, forgetting) + deterministic latency bench.
+  **Harness core done; custom-dimensions harness + latency bench pending.**
 - M2 Baselines: full-history reader baseline, Mem0, Zep/Graphiti, Letta
   adapters on one rig, identical reader model.
 - M3 ContextMemory architecture v1: model-agnostic incremental write path
