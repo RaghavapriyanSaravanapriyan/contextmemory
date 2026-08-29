@@ -72,11 +72,11 @@ class WelcomeScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Static("", id="spacer")
         yield Static("CONTEXTMEMORY", id="logo")
-        yield Static("Memory infrastructure for AI systems", id="tagline")
+        yield Static("A durable memory layer for local minds", id="tagline")
         yield Static("", id="spacer2")
         yield Button("Get Started", id="start-btn", variant="primary")
         yield Button("Run Offline Demo", id="demo-btn")
-        yield Static("Persistent memory · Adaptive retrieval · Minimal config",
+        yield Static("Remember what matters. Retrieve what is true.",
                      id="footer-line")
 
     def on_mount(self) -> None:
@@ -358,11 +358,11 @@ class Dashboard(Screen):
     def compose(self) -> ComposeResult:
         with Horizontal(id="shell"):
             with Vertical(id="sidebar"):
-                yield Static("CONTEXTMEMORY", id="brand")
+                yield Static("CONTEXTMEMORY\n[dim]MEMORY BRAIN[/dim]", id="brand")
                 yield Static("", id="statusline")
                 with Horizontal(id="quick-actions"):
                     yield Button("RUN DEMO", id="run-demo", variant="primary")
-                    yield Button("ASK", id="focus-ask")
+                    yield Button("ASK BRAIN", id="focus-ask")
                 nav = OptionList(id="nav")
                 for label in [
                     "1  Brain",
@@ -483,7 +483,7 @@ class BrainView(Vertical):
 
     def _refresh_log(self) -> None:
         log = "\n".join(self._app.log_lines[-8:]) or \
-            "Ready. Ask the brain, or press R to replay the demo."
+            "Ready. Ask the brain, or press R to replay the story."
         self.query_one("#brain-log", Static).update(log)
 
     def refresh_brain(self) -> None:
@@ -602,13 +602,16 @@ class MemoryBrainApp(App):
     """ContextMemory TUI — onboarding + dashboard."""
 
     CSS = """
-    Screen { layout: vertical; }
+    Screen { layout: vertical; background: #0b1020; color: #e8ecff; }
+    WelcomeScreen { align: center middle; }
+    BuildingScreen, ConnectAIScreen, OllamaScanScreen, MemoryOnlineScreen {
+        align: center middle;
+    }
     #spacer, #spacer2 { height: 3; }
-    #logo { text-align: center; text-style: bold; color: $accent; }
-    #tagline { text-align: center; color: $text; }
-    #footer-line { text-align: center; color: $text-muted; }
-    #start-btn { width: 24; margin: 1 0 0 0; }
-    #demo-btn { width: 24; margin: 1 0 0 0; }
+    #logo { text-align: center; text-style: bold; color: #8b9cff; }
+    #tagline { text-align: center; color: #d9def8; }
+    #footer-line { text-align: center; color: #7f89b3; }
+    #start-btn, #demo-btn { width: 28; margin: 1 0 0 0; }
     #prompt { text-align: center; text-style: bold; padding: 2 0 0 0; }
     #sub { text-align: center; color: $text-muted; }
     #building-options, #provider-options { margin: 1 0 0 0; }
@@ -617,21 +620,22 @@ class MemoryBrainApp(App):
     #status { text-align: center; color: $text; }
     #open { width: 26; margin: 1 0 0 0; }
     #shell { height: 1fr; }
-    #sidebar { width: 30; border-right: heavy $primary; background: $panel; }
-    #brand { text-style: bold; color: $accent; padding: 1 1 0 1; }
-    #statusline { height: 1; padding: 0 1; }
+    #sidebar { width: 30; border-right: solid #29345f; background: #111832; }
+    #brand { text-style: bold; color: #9aa8ff; padding: 1 1 0 1; }
+    #statusline { height: 1; padding: 0 1; color: #aab4df; }
     #quick-actions { height: 3; padding: 0 1; }
-    #quick-actions Button { width: 1fr; margin: 0 1 0 0; }
+    #quick-actions Button { width: 1fr; margin: 0 1 0 0; min-width: 0; }
+    #quick-actions Button:hover { background: #33427d; }
     #processing-indicator { dock: bottom; width: 32; height: 2; padding: 0 1;
-                            background: $panel; align: right middle; }
-    #processing-label { width: 14; content-align: right middle; color: $success; }
+                            background: #111832; align: right middle; }
+    #processing-label { width: 14; content-align: right middle; color: #65e6b0; }
     #processing-bar { width: 14; height: 1; margin: 0 0 0 1; display: none; }
     #modal-processing-bar { height: 1; margin: 1 2; display: none; }
     #nav { height: 1fr; }
     #content { height: 1fr; padding: 1 2; }
     #brain-pane { height: 1fr; }
     #brain-status { height: 1; padding: 0 0 1 0; }
-    #brain-log { height: 1fr; border: round $primary; padding: 0 1;
+    #brain-log { height: 1fr; border: round #35457e; padding: 0 1;
                  overflow-y: auto; }
     #question-input { height: 3; margin: 1 0 0 0; }
     #models-pane, #retrieval-pane, #perf-pane,
@@ -716,7 +720,7 @@ class MemoryBrainApp(App):
         self.push_screen(MemoryOnlineScreen(self.config), self._finish_boot)
 
     def _finish_boot(self, _: None | str | object = None) -> None:
-        self._log("Ready. Ask the brain, or press R to replay the demo.")
+        self._log("Memory brain online. Ask a question or replay the story with R.")
         if not self._offline and not self.live_model:
             self.run_worker(self._auto_connect())
         else:
