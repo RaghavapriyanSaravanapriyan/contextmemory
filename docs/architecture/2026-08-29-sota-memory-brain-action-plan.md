@@ -1,7 +1,7 @@
 # ContextMemory Brain: SOTA OSS Action Plan
 
 **Date:** 2026-08-29  
-**Status:** Proposed implementation plan  
+**Status:** Implemented (v1)  
 **Audience:** ContextMemory contributors, hackathon team, implementation agents  
 **Primary competitor:** Supermemory  
 **Primary local stack:** Qwen3-8B + Qwen3-Embedding-0.6B + C++ core
@@ -951,6 +951,13 @@ It must show:
 - context-token and latency counters;
 - an abstention example;
 - no network or API key required.
+
+**Status (2026-08-29): DONE.** `uv run contextmemory demo --offline` launches
+the Textual TUI and the scripted replay (key `R`) demonstrates the full story:
+seed profile -> contradiction (moved to Seattle, joined Globex) -> current
+truth (Seattle/Globex) -> historical truth (New York) -> abstention (passport
+number). Bench race (key `B`) and Health (key `H`) show measured numbers, not
+fakes. See `contextmemory/tui/` for the implementation.
 
 The second milestone is complete only when this command produces a reproducible
 JSONL result:

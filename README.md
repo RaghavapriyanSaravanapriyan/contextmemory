@@ -53,7 +53,7 @@ You need: **Python 3.11+, uv, a C++ compiler, and CMake**. That's it.
 git clone https://github.com/RaghavapriyanSaravanapriyan/contextmemory.git
 cd contextmemory
 uv sync --extra dev        # builds the C++ engine automatically
-scripts/verify.sh          # run all tests — should say 47 passed, all green
+scripts/verify.sh          # run all tests — should say all green
 ```
 
 The latency demo needs **no model and no API key**:
@@ -67,33 +67,51 @@ moment: a real memory engine, in microseconds, on your laptop.
 
 ## The demo script (TUI)
 
-Tell your teammate to run this and watch the numbers:
+Run the offline brain demo — **no model, no API key, fully reproducible**:
 
 ```bash
-# 1. The engine works end-to-end (no LLM needed)
-uv run python -c "
-from contextmemory import MemoryClient
-from contextmemory.eval.protocol import Session, Turn
-from datetime import datetime
-
-mem = MemoryClient('demo')
-mem.session(Session(session_id='s1', timestamp=datetime(2024,1,1),
-    turns=[Turn(role='user', content='I live in New York and work at Acme Corp.')]))
-mem.session(Session(session_id='s2', timestamp=datetime(2024,7,1),
-    turns=[Turn(role='user', content='I moved to Seattle and joined Globex.')]))
-
-print('Now:', [h.text for h in mem.search('where do I live now', question_date=datetime(2024,8,1))])
-print('Then:', [h.text for h in mem.search('where did I live before', question_date=datetime(2024,8,1))])
-"
+uv run contextmemory demo --offline
 ```
 
-What it proves: **one fact, two truths, both correct** — the current answer and
-the historical one. That's temporal memory. That's the differentiator.
+Press `R` to replay the scripted story:
 
-Then measure it:
+1. **Memory forms** — seed profile becomes stable facts + current state
+2. **Contradiction** — "I moved to Seattle and joined Globex" closes New
+   York/Acme, opens Seattle/Globex, draws the `updates` edge on the timeline
+3. **Current vs historical truth** — "Where do I live now?" → Seattle;
+   "Where did I live before moving?" → New York (sub-millisecond retrieval)
+4. **Abstention** — "What is my passport number?" → honest "not enough
+   information", no fabricated cell
+5. **Bench race** (`B`) — ContextMemory vs naive RAG vs full context:
+   tokens, latency, evidence quality (measured, not faked)
+6. **Memory health** (`H`) — cells, episodes, projections, edges, telemetry
+
+Key bindings: `1` Brain · `2` Timeline · `3` Why · `B` Bench · `H` Health ·
+`R` Replay · `Q` Quit. For a live path with a local model:
 
 ```bash
-uv run contextmemory bench --system contextmemory
+uv run contextmemory demo --live
+uv run contextmemory ask "Where do I live now?" \
+  --reader-api-base http://localhost:11434/v1 --reader-api-key ollama \
+  --reader-model qwen3:8b
+```
+
+## The engine story
+
+```text
+agent conversation / tool trace
+        │
+  FAST CAPTURE  → immutable Episode (no LLM, <1ms)
+        │
+  LOCAL ENCODER → Qwen3 single-pass → structured cells
+        │
+  RECONCILE     → dedup / version / project (deterministic first)
+        │
+  QUERY COMPILER→ bounded plan (no read-path LLM)
+        │
+  EVIDENCE PACK → minimum-sufficient context under a hard token budget
+        │
+  answer model  → cites memory ids, abstains when insufficient
 ```
 
 ## Beating the benchmarks
@@ -122,29 +140,17 @@ engine, not hoped for. Accuracy is the next push, measured on the shared rig.
 
 ## How it works (60-second version)
 
-```
-You talk to an agent
-        │
-        ▼
-[Extract]  One LLM call turns the conversation into a few clean facts
-        │
-        ▼
-[Store]   Facts go into a C++ engine — indexed for search, stamped with time
-        │
-        ▼
-[Recall]  When asked a question, the engine searches in microseconds
-          and returns only the facts that are true *at that moment*
-```
-
 Three layers:
 
-- **C++ core** (`core/`) — the engine: stores facts, indexes them, searches
-  them, saves to disk. No external databases. No network. Just fast code.
-- **Python layer** (`src/contextmemory/`) — talks to any AI model to turn
-  conversations into facts, and exposes a simple `MemoryClient` API.
-- **Evaluation rig** (`src/contextmemory/eval/`) — replays real benchmark
-  datasets through any memory system and scores it. This is how we prove
-  claims instead of just making them.
+- **C++ core** (`core/`) — the ETMC engine: immutable episodes, bi-temporal
+  memory cells, state projections, deterministic query compilation, hybrid
+  retrieval, evidence packing. No external databases. No network. Just fast
+  code.
+- **Python layer** (`contextmemory/`) — talks to any AI model to turn
+  conversations into structured cells, and exposes a simple `MemoryClient` API.
+- **Evaluation rig** (`contextmemory/eval/`) — replays real benchmark datasets
+  through any memory system and scores it. This is how we prove claims instead
+  of just making them.
 
 The whole thing installs with one command and has **zero external services**.
 No database server. No Redis. No cloud.
@@ -152,41 +158,51 @@ No database server. No Redis. No cloud.
 ## Repository map
 
 ```text
-core/                        C++ memory engine (the fast part)
-src/contextmemory/engine/    extraction + memory orchestration (Python)
-src/contextmemory/api.py     the simple public API (MemoryClient)
-src/contextmemory/eval/      the benchmark rig
-scripts/verify.sh            one command: run all tests
-benchmarks/data/             benchmark datasets (you download these)
-reports/                     research + architecture decisions
-tasks/active/                what we're working on
+core/                          C++ ETMC memory engine (the fast part)
+  include/cmcore/              cells, episodes, projections, store, indexes
+  src/                         capture / reconcile / compile / search / pack
+  python/bindings.cpp          nanobind surface (_core extension)
+  tests/test_core.cpp          dependency-free C++ test suite (11 suites)
+contextmemory/                 the entire Python package (moved from src/)
+  core.py                      typed facade over _core
+  engine/                      extractor, embedder, ETMC orchestration
+  eval/                        benchmark rig (replay, dimensions, latency)
+  tui/                         Textual brain (Live, Timeline, Why, Bench, Health)
+  api.py, cli.py               MemoryClient API + contextmemory CLI
+tests/                         Python test suite (49 tests)
+scripts/verify.sh              one command: run all tests
+benchmarks/data/               benchmark datasets (you download these)
+reports/                       research + architecture decisions
+tasks/active/                  what we're working on
 ```
 
 ## Development
 
 ```bash
 scripts/verify.sh        # all Python tests + lint
-uv run pytest            # test suite (47 tests)
-uv run ruff check src tests
+uv run pytest            # test suite (49 tests)
+uv run ruff check contextmemory tests
 ```
 
 For the C++ engine's own tests:
 
 ```bash
 cmake -S core -B build/core && cmake --build build/core -j
-./build/core/cmcore_test          # 12 test suites, all pass
+./build/core/cmcore_test          # 11 test suites, all pass
 ```
 
 ## Status
 
-- ✅ Engine: built (C++ core, temporal facts, fast search, persistence)
+- ✅ Engine: ETMC core built (capture, reconcile, projections, query compiler,
+  evidence packing, persistence)
 - ✅ Measurement rig: built (benchmarks + latency + custom dimensions)
+- ✅ TUI: offline scripted demo + live model path
 - 🔄 Benchmark runs: beating SOTA on latency + write cost; pushing accuracy
 - ⏭️ Next: Mem0/Zep adapters for a head-to-head run, then LoCoMo + BEAM
 
 **Mission and roadmap:** `tasks/active/T001-beat-frontier-memory-layers.md`
 
-**SOTA architecture and hackathon implementation plan:**
+**SOTA architecture and implementation plan:**
 `docs/architecture/2026-08-29-sota-memory-brain-action-plan.md`
 
 ---
