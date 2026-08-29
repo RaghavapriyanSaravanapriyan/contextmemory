@@ -1,159 +1,295 @@
-# ContextMemory
+<p align="center">
+  <strong>ContextMemory</strong>
+</p>
 
-**Give AI agents a memory that actually remembers.**
+<p align="center">
+  <strong>Give AI agents a memory that actually remembers.</strong>
+</p>
 
-> LLMs have no memory. Every conversation, they forget everything you told
-> them. ContextMemory is a memory layer that fixes this — it stores what
-> matters, updates facts when they change, forgets what's stale, and recalls
-> the right thing in **microseconds** — all with a real C++ engine that runs
-> on your laptop.
+<p align="center">
+  <a href="#quickstart">Quickstart</a> ·
+  <a href="#install">Install</a> ·
+  <a href="#test">Test</a> ·
+  <a href="#benchmark">Benchmark</a> ·
+  <a href="#how-memory-works">How it works</a> ·
+  <a href="#the-api">API</a>
+</p>
 
----
-
-## The problem in one minute
-
-Ask any AI assistant "what did I say last week about my trip to Japan?" and it
-has no idea. Even the best memory products (Mem0, Zep, Supermemory) are slow,
-expensive, and store too much noise.
-
-Every serious agent — personal assistants, coding agents, customer bots — needs
-memory. And memory is broken.
-
-## What we built
-
-A memory engine with three superpowers the big players don't have:
-
-1. **It's fast.** The core is C++, not Python. Reading memory takes
-   **microseconds** (0.02ms). The industry bar is 200ms. We're ~10,000x under it.
-2. **It knows time.** Facts have a "when was this true" timeline. If you move
-   from New York to Seattle, it remembers *both* — and always answers with the
-   current one. Stale facts can't poison your answers.
-3. **It tells the truth.** We built tests that catch the thing every memory
-   system fakes: **write precision** (does it only store what was really said?)
-   and **evolution** (does it update when facts change?). No one measures this.
-   We do.
-
-And it works with any model — OpenAI, or free local models with no GPU.
-
-## The pitch (for judges)
-
-> "Today's AI assistants can't remember yesterday. Existing memory layers are
-> slow, expensive, and keep wrong information. We built a memory engine in C++
-> that recalls in microseconds, tracks how facts change over time, and scores
-> itself on the dimensions everyone else ignores — write precision, evolution,
-> and forgetting. We're beating the SOTA on the benchmarks they don't even run."
+<p align="center">
+  <strong>A C++ memory engine that recalls in microseconds, tracks how facts
+  change over time, and tells the truth when it doesn't know.</strong><br/>
+  <strong>~0.1ms reads · 1 LLM call per conversation · zero external services</strong>
+</p>
 
 ---
 
-## Try it (5 minutes)
+Your AI forgets everything between conversations. Ask it "what did I say last
+week about my trip to Japan?" and it has no idea. ContextMemory fixes that: it
+stores what matters, updates facts when they change, forgets what's stale, and
+hands back the right context in microseconds — with a real C++ engine that
+runs entirely on your laptop.
 
-You need: **Python 3.11+, uv, a C++ compiler, and CMake**. That's it.
+| | |
+|---|---|
+| ⚡ **Fast** | The core is C++, not Python. Measured answer reads are **~0.1ms** — the industry bar is ~300ms. |
+| 🕰️ **Knows time** | Facts carry a "when was this true" timeline. Move from New York to Seattle and it remembers *both* — and always answers with the current one. |
+| 🎯 **Writes precisely** | Tests score what every other memory system fakes: **write precision** (only stores what was really said) and **evolution** (updates when facts change). |
+| 🚫 **Tells the truth** | No fabricated cells. When memory doesn't cover the question, it says "I don't have enough information." |
+| 🧩 **Any model** | Bring a frontier API or a free local model. Works with anything OpenAI-compatible, including **Ollama** on a machine with no GPU. |
+
+---
+
+## Quickstart
+
+Three commands cover everything. Clone once, then:
 
 ```bash
 git clone https://github.com/RaghavapriyanSaravanapriyan/contextmemory.git
 cd contextmemory
-uv sync --extra dev        # builds the C++ engine automatically
-scripts/verify.sh          # run all tests — should say all green
 ```
 
-The latency demo needs **no model and no API key**:
+| What | One command |
+|---|---|
+| **Install + run everything** | `./run.sh --live --model qwen3:4b` |
+| **Run the whole test suite** | `./scripts/test-all.sh` |
+| **Launch the TUI brain** | `./run.sh` |
+
+Each one-liner installs what it needs (`./run.sh` sets up `uv`, dependencies,
+and the C++ engine automatically). **No model, no API key, no database, no
+cloud** for the offline demo; add `--live` and your local model for the full
+experience.
+
+### Launch the TUI with your model
 
 ```bash
-uv run contextmemory bench --system contextmemory --sessions 200
+./run.sh                                   # offline demo, zero config
+./run.sh --live                            # connect to / auto-launch Ollama
+./run.sh --live --model qwen3:4b           # pick the model up front
+./run.sh --live --model qwen3:4b --url http://localhost:11434
 ```
 
-You should see answer latency around **0.02 milliseconds**. That's the wow
-moment: a real memory engine, in microseconds, on your laptop.
-
-## The demo script (TUI)
-
-Run the offline brain demo — **no model, no API key, fully reproducible**:
-
-```bash
-uv run contextmemory demo --offline
-```
-
-Press `R` to replay the scripted story:
-
-1. **Memory forms** — seed profile becomes stable facts + current state
-2. **Contradiction** — "I moved to Seattle and joined Globex" closes New
-   York/Acme, opens Seattle/Globex, draws the `updates` edge on the timeline
-3. **Current vs historical truth** — "Where do I live now?" → Seattle;
-   "Where did I live before moving?" → New York (sub-millisecond retrieval)
-4. **Abstention** — "What is my passport number?" → honest "not enough
-   information", no fabricated cell
-5. **Bench race** (`B`) — ContextMemory vs naive RAG vs full context:
-   tokens, latency, evidence quality (measured, not faked)
-6. **Memory health** (`H`) — cells, episodes, projections, edges, telemetry
-
-Key bindings: `1` Brain · `2` Timeline · `3` Why · `B` Bench · `H` Health ·
-`R` Replay · `Q` Quit. For a live path with a local model:
-
-```bash
-uv run contextmemory demo --live
-uv run contextmemory ask "Where do I live now?" \
-  --reader-api-base http://localhost:11434/v1 --reader-api-key ollama \
-  --reader-model qwen3:8b
-```
-
-## The engine story
+Inside the TUI, press `O` to open the **Connect to Ollama** screen — it has
+every field you need, right there:
 
 ```text
-agent conversation / tool trace
-        │
-  FAST CAPTURE  → immutable Episode (no LLM, <1ms)
-        │
-  LOCAL ENCODER → Qwen3 single-pass → structured cells
-        │
-  RECONCILE     → dedup / version / project (deterministic first)
-        │
-  QUERY COMPILER→ bounded plan (no read-path LLM)
-        │
-  EVIDENCE PACK → minimum-sufficient context under a hard token budget
-        │
-  answer model  → cites memory ids, abstains when insufficient
+Connect to Ollama
+  Endpoint   http://localhost:11434
+  API key    ollama
+  [Scan models]  [Launch ollama serve]
+  → pick a model from the list
 ```
 
-## Beating the benchmarks
+Endpoint, API key, and model are all editable in the TUI — edit the URL or key,
+rescan, and pick any model Ollama serves. Or pass everything on the command
+line with `--url` and `--model`. The TUI launches `ollama serve` itself if
+nothing is listening, so the whole flow is one command.
 
-We run three kinds of measurements, all on one shared rig with the same model:
+### Run the whole test suite
 
-| Command | What it measures | Why it matters |
-|---|---|---|
-| `contextmemory eval` | Answer accuracy on LongMemEval (the industry benchmark) | Head-to-head vs Mem0, Zep, Supermemory |
-| `contextmemory dims` | Write precision, evolution, forgetting | The things nobody else measures |
-| `contextmemory bench` | Ingest/answer latency | Microseconds vs 200ms+ |
+```bash
+./scripts/test-all.sh
+```
 
-Our targets vs the 2026 leaders (Supermemory, Mem0, Hindsight):
-
-| Metric | SOTA (2026) | Our target |
-|---|---|---|
-| LongMemEval accuracy | ~85% | ≥ 85%, targeting 91%+ |
-| Context per query | ~720 tokens | < 700 tokens |
-| Search latency | ~300ms | **< 20ms** |
-| Write cost | multi-round LLM | **1 LLM call per conversation** |
-
-We're already at the latency and write-cost targets — they're built into the
-engine, not hoped for. Accuracy is the next push, measured on the shared rig.
+Runs the C++ core tests, Python tests, lint, and the microsecond latency
+bench — no model, no API key.
 
 ---
 
-## How it works (60-second version)
+## Install
 
-Three layers:
+Requirements: **Python 3.11+, a C++ compiler, and CMake**. That's it.
 
-- **C++ core** (`core/`) — the ETMC engine: immutable episodes, bi-temporal
-  memory cells, state projections, deterministic query compilation, hybrid
-  retrieval, evidence packing. No external databases. No network. Just fast
-  code.
-- **Python layer** (`contextmemory/`) — talks to any AI model to turn
-  conversations into structured cells, and exposes a simple `MemoryClient` API.
-- **Evaluation rig** (`contextmemory/eval/`) — replays real benchmark datasets
-  through any memory system and scores it. This is how we prove claims instead
-  of just making them.
+```bash
+git clone https://github.com/RaghavapriyanSaravanapriyan/contextmemory.git
+cd contextmemory
+./run.sh
+```
 
-The whole thing installs with one command and has **zero external services**.
-No database server. No Redis. No cloud.
+Or install the pieces explicitly:
+
+```bash
+uv sync --extra dev          # installs deps and builds the C++ core
+```
+
+Everything is a library you import, a CLI you call, and a C++ core you can
+benchmark. No server to start, no Redis, no container.
+
+### Live brain with Ollama
+
+ContextMemory works with **any model Ollama serves** — qwen, llama, gemma, and
+anything you've pulled. Ollama can be running in another terminal or as a
+service; if nothing is listening, the TUI starts `ollama serve` itself.
+
+```bash
+./run.sh --live                     # connect to / launch Ollama
+./run.sh --live --model qwen3:4b    # pick the model up front
+./run.sh --live --model qwen3:4b --url http://localhost:11434
+```
+
+Inside the TUI:
+
+1. Press `O` to open the **Connect to Ollama** screen — scan models, or launch
+   `ollama serve` under the hood with one keystroke.
+2. Pick a model. You're live.
+3. `remember: <fact>` stores a fact through LLM extraction; ask questions and
+   the brain answers with citations (`[M2]`), routing, and token telemetry.
+
+Press `O` any time to switch models. `Q` quits. Other views: `1` Brain ·
+`2` Timeline · `3` Why · `B` Bench race · `H` Health · `R` Replay.
+
+---
+
+## Test
+
+One command runs the whole deterministic suite — C++ core tests, Python tests,
+lint, and the microsecond latency bench. No model, no API key:
+
+```bash
+./scripts/test-all.sh
+```
+
+What it runs:
+
+```text
+C++ core      → 11 test suites / 49 checks   (capture, reconcile, versioning,
+                                               projections, packing, persistence)
+Python        → 52 tests                     (wrapper, eval harness, CLI, API)
+Lint          → ruff (clean)
+Latency bench → ingest p50 ~0.009ms · answer p50 ~0.111ms  (200 sessions)
+```
+
+## Benchmark
+
+The same rig that measures us also scores any system and any model you want.
+Three commands, one shared harness:
+
+| Command | What it measures | Why it matters |
+|---|---|---|
+| `contextmemory bench` | Ingest/answer latency, no reader | Microseconds vs 300ms+ SOTA |
+| `contextmemory dims` | Write precision, evolution, forgetting | The dimensions nobody else scores |
+| `contextmemory eval` | Answer accuracy on LongMemEval | Head-to-head vs Mem0, Zep, Supermemory |
+
+### With your own Ollama model
+
+Point the harness at any model you have pulled:
+
+```bash
+uv run contextmemory dims \
+  --system contextmemory \
+  --reader-api-base http://localhost:11434 \
+  --reader-api-key ollama --reader-model qwen3:4b
+```
+
+`dims` replays 13 probes with known ground truth and scores **write precision,
+evolution, and forgetting** — the behaviors that decide whether a memory layer
+is trustworthy.
+
+`eval` replays LongMemEval (500 instances — start with a slice):
+
+```bash
+uv run contextmemory eval \
+  --data benchmarks/data/longmemeval_oracle.json \
+  --system contextmemory --max-instances 10 \
+  --reader-api-base http://localhost:11434 \
+  --reader-api-key ollama --reader-model qwen3:4b \
+  --out reports/runs/run-qwen34b.jsonl
+```
+
+CPU-only tip: a 4B model takes roughly 15-25s per extraction on CPU, and every
+session ingested plus every probe answered costs one call — budget ~10-20
+minutes for `dims`, and keep `--max-instances` small for `eval`. See your
+models with `ollama list`; pull one with `ollama pull qwen3:4b`. Small local
+models occasionally produce verbose or imperfect extractions; a capable model
+or a GPU makes runs dramatically cleaner and faster.
+
+First measured run (qwen3:4b, CPU-only, no GPU), via `contextmemory dims`:
+
+```text
+write-precision  1.0000 (5 probes)   only stores what was really said
+evolution        0.8000 (5 probes)   updates when facts change
+forgetting       1.0000 (3 probes)   stale facts expire and abstain
+```
+
+---
+
+## The API
+
+```python
+from contextmemory.api import MemoryClient
+from contextmemory.engine.extractor import LLMExtractor
+from contextmemory.engine.ollama import OllamaManager
+from contextmemory.eval.protocol import Session, Turn
+from datetime import datetime
+
+# Any OpenAI-compatible reader — Ollama, vLLM, LM Studio, a frontier API.
+reader = OllamaManager().reader("qwen3:4b")   # native /api/chat, thinking off
+
+brain = MemoryClient("user_123", extractor=LLMExtractor(reader))
+
+# Store a conversation (write path: capture + 1 LLM extraction call)
+brain.session(Session(
+    session_id="conv-1",
+    timestamp=datetime.now(),
+    turns=[Turn(role="user", content="I moved to Seattle and joined Globex.")],
+))
+
+# Ask — recall evidence, pack it, generate a cited answer
+answer, report = brain.ask("Where does the user live?", reader)
+print(answer)              # "The user lives in Seattle [M5]."
+print(report.tokens)       # 17
+```
+
+Everything else is a thin read path: `search(query)`, `recall(query)`,
+`profile()` (static facts + recent context), `projection(subject, predicate)`
+(the current value of any fact, with its version history). Memory is scoped by
+**container tag**, so one brain can serve many users, repos, or clients.
+
+---
+
+## How memory works
+
+```
+conversation / tool trace
+        │
+  CAPTURE        → immutable Episode recorded, no LLM, <1ms
+        │
+  EXTRACT        → one LLM pass → compact structured cells
+        │          (subject / predicate / object / when-true)
+        │
+  RECONCILE      → deterministic C++ core: dedup, version, project.
+        │          "I moved to Seattle" supersedes "I live in NYC" —
+        │          it closes the old cell and opens the new one
+        │
+  QUERY COMPILE  → question → bounded plan, NO read-path LLM
+        │
+  EVIDENCE PACK  → minimum-sufficient context under a hard token budget
+        │
+  ANSWER         → your model, given only that evidence; cites memory ids,
+                   abstains when evidence is insufficient
+```
+
+Three layers, each with one job:
+
+- **C++ core (`core/`)** — the ETMC engine. Episodes are immutable; cells are
+  bi-temporal (when they became true, when they stopped being true); a query
+  compiles into a bounded plan and searches without an LLM. No external
+  databases, no network — just fast code. This is where the microseconds come
+  from.
+- **Python layer (`contextmemory/`)** — the write path's single LLM call and
+  everything around it: extraction, embedding, orchestration, the
+  `MemoryClient` API, and the TUI. Model-agnostic by design.
+- **Evaluation rig (`contextmemory/eval/`)** — replays real benchmark datasets
+  through any memory system and scores it. You can't beat what you can't
+  measure, so we measure everything — including ourselves.
+
+Why it's trustworthy: the write path prefers **no fact over a guessed fact**;
+contradictions are resolved deterministically and *both* versions are kept with
+their validity windows; and the system scores itself on **write precision**
+(did it store only what was said?), **evolution** (did it update when facts
+changed?), and **forgetting** (did stale facts expire?) — the dimensions no
+public benchmark measures.
+
+---
 
 ## Repository map
 
@@ -163,42 +299,29 @@ core/                          C++ ETMC memory engine (the fast part)
   src/                         capture / reconcile / compile / search / pack
   python/bindings.cpp          nanobind surface (_core extension)
   tests/test_core.cpp          dependency-free C++ test suite (11 suites)
-contextmemory/                 the entire Python package (moved from src/)
+contextmemory/                 the Python package
   core.py                      typed facade over _core
-  engine/                      extractor, embedder, ETMC orchestration
+  engine/                      extractor, embedder, ETMC orchestration, Ollama
   eval/                        benchmark rig (replay, dimensions, latency)
   tui/                         Textual brain (Live, Timeline, Why, Bench, Health)
   api.py, cli.py               MemoryClient API + contextmemory CLI
-tests/                         Python test suite (49 tests)
-scripts/verify.sh              one command: run all tests
-benchmarks/data/               benchmark datasets (you download these)
+tests/                         Python test suite (52 tests)
+scripts/test-all.sh            one command: full deterministic suite (no model)
+run.sh                         one-shot installer + TUI launcher (Ollama-aware)
+benchmarks/data/               LongMemEval datasets (oracle + cleaned)
 reports/                       research + architecture decisions
 tasks/active/                  what we're working on
-```
-
-## Development
-
-```bash
-scripts/verify.sh        # all Python tests + lint
-uv run pytest            # test suite (49 tests)
-uv run ruff check contextmemory tests
-```
-
-For the C++ engine's own tests:
-
-```bash
-cmake -S core -B build/core && cmake --build build/core -j
-./build/core/cmcore_test          # 11 test suites, all pass
 ```
 
 ## Status
 
 - ✅ Engine: ETMC core built (capture, reconcile, projections, query compiler,
   evidence packing, persistence)
-- ✅ Measurement rig: built (benchmarks + latency + custom dimensions)
-- ✅ TUI: offline scripted demo + live model path
-- 🔄 Benchmark runs: beating SOTA on latency + write cost; pushing accuracy
-- ⏭️ Next: Mem0/Zep adapters for a head-to-head run, then LoCoMo + BEAM
+- ✅ Measurement rig: benchmark + latency + custom dimensions
+- ✅ TUI: offline scripted demo + live Ollama path
+- ✅ One-command flows: install (`./run.sh`), test (`./scripts/test-all.sh`),
+  benchmark (`contextmemory bench | dims | eval`)
+- 🔄 Pushing LongMemEval accuracy; Mem0/Zep head-to-head adapters next
 
 **Mission and roadmap:** `tasks/active/T001-beat-frontier-memory-layers.md`
 

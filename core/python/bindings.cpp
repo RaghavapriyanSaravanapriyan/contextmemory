@@ -189,7 +189,9 @@ NB_MODULE(_core, m) {
              [](const Store& s, const std::string& subject,
                 const std::string& predicate) -> nb::object {
                  const StateProjection* p = s.projection(subject, predicate);
-                 if (!p) return nb::none();
+                 if (!p) {
+                     return nb::cast(nb::none());
+                 }
                  nb::dict d;
                  d["subject"] = p->subject;
                  d["predicate"] = p->predicate;

@@ -84,7 +84,19 @@ Rules:
 - If the conversation has no durable facts, return {{"cells": []}}.
 - NEVER invent a fact. If unsure, omit it.
 - Distinguish what the user said from what the assistant suggested.
+- Respond with ONLY the JSON object. No thinking, no explanation, no markdown.
+
+Example response shape (do not copy these facts):
+{{"cells": [
+  {{"text": "The user lives in Seattle.", "subject": "user",
+    "predicate": "location", "object": "Seattle", "kind": "world",
+    "confidence": 1.0, "salience": 0.8, "event_date": "",
+    "tags": ["location"], "entities": ["Seattle"],
+    "evidence_span": "I moved to Seattle."}}
+]}}
 """
+
+_EXTRACTION_MAX_TOKENS = 1536
 
 
 class Extractor(Protocol):
@@ -209,7 +221,10 @@ class LLMExtractor:
             transcript=transcript, today=session.timestamp.date().isoformat()
         )
         payload = self._client.complete(
-            [{"role": "user", "content": prompt}], temperature=0.0
+            [{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=_EXTRACTION_MAX_TOKENS,
+            json_mode=True,
         )
         return parse_cells(payload, default_ts, session.timestamp)
 

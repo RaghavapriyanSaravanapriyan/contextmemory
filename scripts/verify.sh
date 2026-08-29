@@ -8,6 +8,6 @@ echo "--> Running test suite"
 uv run pytest
 
 echo "--> Linting with ruff"
-uv run ruff check src tests
+uv run ruff check contextmemory tests
 
 echo "==> Verification complete"

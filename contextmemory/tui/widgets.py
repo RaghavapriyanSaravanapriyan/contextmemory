@@ -71,3 +71,54 @@ class TimelinePane(Static):
 
 def _status(s: int) -> str:
     return {0: "active", 1: "superseded", 2: "expired"}.get(s, "?")
+
+
+class AnswerPane(Static):
+    """Renders the last answer with evidence and routing trace."""
+
+    def render(self) -> Table:
+        table = Table(title="Why this answer", expand=True)
+        table.add_column("Question")
+        table.add_column("Answer")
+        table.add_column("Tokens")
+        table.add_column("Retrieval ms")
+        table.add_column("Route")
+        q, answer, tokens, ms_, route = self.app.last_answer  # type: ignore[attr-defined]
+        table.add_row(q, answer, str(tokens), f"{ms_:.2f}", route)
+        return table
+
+
+class BenchPane(Static):
+    """ContextMemory vs full context vs naive RAG — measured, not faked."""
+
+    def render(self) -> Table:
+        table = Table(title="Bench race (measured on this run)", expand=True)
+        table.add_column("System")
+        table.add_column("Retrieved tokens")
+        table.add_column("Retrieval ms")
+        table.add_column("Evidence")
+        for row in self.app.bench_rows:  # type: ignore[attr-defined]
+            table.add_row(*[str(x) for x in row])
+        return table
+
+
+class HealthPane(Static):
+    """Memory health counters from the engine."""
+
+    def render(self) -> Table:
+        table = Table(title="Memory health", expand=True)
+        table.add_column("Metric")
+        table.add_column("Value")
+        store = self.app.client.engine.store  # type: ignore[attr-defined]
+        eng = self.app.client.engine  # type: ignore[attr-defined]
+        for metric, value in [
+            ("cells", store.cell_count),
+            ("episodes", store.episode_count),
+            ("projections", store.projection_count),
+            ("edges", store.edge_count),
+            ("entities", store.entity_count),
+            ("extract failures", eng.extract_failures),
+            ("fallbacks used", eng.fallback_count),
+        ]:
+            table.add_row(metric, str(value))
+        return table

@@ -51,6 +51,10 @@ class MemoryClient:
     def container_tag(self) -> str:
         return self._engine.store.container_tag
 
+    def set_extractor(self, extractor: Extractor | None) -> None:
+        """Swap the write-path extractor without losing stored memory."""
+        self._engine.set_extractor(extractor)
+
     @property
     def engine(self) -> MemoryEngine:
         return self._engine

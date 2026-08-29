@@ -95,21 +95,35 @@ class OpenAICompatClient:
         max_tokens: int | None = None,
     ) -> None:
         self._model = model
+        # Accept both roots ("http://localhost:11434") and already-suffixed
+        # bases ("http://localhost:11434/v1"); always talk to /v1/chat/completions.
+        root = base_url.rstrip("/")
+        if root.endswith("/v1"):
+            root = root[: -len("/v1")]
         self._client = httpx.Client(
-            base_url=base_url.rstrip("/"),
+            base_url=root,
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=timeout,
         )
         self._max_tokens = max_tokens
 
-    def complete(self, messages: list[Message], temperature: float = 0.0) -> str:
+    def complete(
+        self,
+        messages: list[Message],
+        temperature: float = 0.0,
+        max_tokens: int | None = None,
+        json_mode: bool = False,
+    ) -> str:
         payload: dict = {
             "model": self._model,
             "messages": messages,
             "temperature": temperature,
         }
-        if self._max_tokens is not None:
-            payload["max_tokens"] = self._max_tokens
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        limit = max_tokens if max_tokens is not None else self._max_tokens
+        if limit is not None:
+            payload["max_tokens"] = limit
         resp = self._client.post("/v1/chat/completions", json=payload)
         resp.raise_for_status()
         data = resp.json()

@@ -34,6 +34,24 @@ DEFAULT_TOKEN_BUDGET = 512
 DEFAULT_TOP_K = 8
 
 
+def _asof(question_date: datetime | None) -> int:
+    """Question reference time in epoch ms; ``None`` means right now.
+
+    A missing date must not mean the epoch (1970): "current state" queries
+    would then evaluate validity windows at the beginning of time and miss
+    every cell. The intuitive contract is "as of now".
+
+    Uses naive ``datetime.now()`` to stay consistent with the write path,
+    which timestamps sessions with ``datetime.now()`` and lets ``to_ms`` treat
+    naive values as UTC. Mixing aware-UTC "now" with naive-UTC stored
+    timestamps shifts the reference by the local UTC offset and can push it
+    before a just-stored cell's validity window.
+    """
+    return to_ms(question_date) if question_date is not None else to_ms(
+        datetime.now()
+    )
+
+
 @dataclass
 class IngestReport:
     episode_id: int = 0
@@ -95,6 +113,14 @@ class MemoryEngine:
     @property
     def store(self) -> MemoryStore:
         return self._store
+
+    def set_extractor(self, extractor: Extractor | None) -> None:
+        """Swap the write-path extractor, keeping the same store.
+
+        Lets a live session adopt LLM extraction without losing the cells the
+        deterministic path already wrote to this engine.
+        """
+        self._extractor = extractor or NullExtractor()
 
     @property
     def cells_ingested(self) -> int:
@@ -169,7 +195,7 @@ class MemoryEngine:
         top_k: int = DEFAULT_TOP_K,
         embed_query: bool = True,
     ) -> RecallReport:
-        at = to_ms(question_date) if question_date is not None else 0
+        at = _asof(question_date)
         report = RecallReport()
 
         t0 = time.perf_counter()
@@ -220,7 +246,9 @@ class MemoryEngine:
             "about the user, retrieved from a memory store. Answer the "
             "question using ONLY the memories below. Cite memory ids in "
             "brackets when you use them. If the memories do not contain "
-            "enough information to answer, say so explicitly.\n\n"
+            "enough information to answer, say so explicitly.\n"
+            "Answer directly in one or two sentences. No reasoning, no "
+            "preamble, no self-talk, no markdown.\n\n"
             f"<memories>\n{context}\n</memories>\n\n"
             f"Question (date: {question_date}): {question}"
         )
@@ -229,7 +257,7 @@ class MemoryEngine:
         return answer, report
 
     def profile(self, question_date: datetime | None = None) -> Profile:
-        at = to_ms(question_date) if question_date is not None else 0
+        at = _asof(question_date)
         return self._store.profile(at_time=at)
 
     def projection(self, subject: str, predicate: str) -> StateProjection | None:

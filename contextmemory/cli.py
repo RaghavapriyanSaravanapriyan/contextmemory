@@ -23,6 +23,8 @@ import json
 from collections.abc import Callable
 from datetime import datetime
 
+import httpx
+
 from contextmemory.engine.embedder import DeterministicHashEmbedder
 from contextmemory.engine.extractor import LLMExtractor
 from contextmemory.eval import (
@@ -50,6 +52,34 @@ _SYSTEMS: dict[str, Callable[[OpenAICompatClient], MemorySystem]] = {
         embedder=DeterministicHashEmbedder(),
     ),
 }
+
+
+def make_reader(
+    base_url: str,
+    api_key: str,
+    model: str,
+    *,
+    timeout: float = 240.0,
+):
+    """Build a reader for ``base_url``.
+
+    Detects a local Ollama server (``/api/tags`` responds) and uses the native
+    Ollama client, which disables Qwen3-family thinking mode and constrains
+    extraction to valid JSON. The OpenAI-compatible layer cannot do either, so
+    thinking models (qwen3, ...) silently burn their token budget on a hidden
+    reasoning trace and return nothing. Everything else uses the standard
+    OpenAI-compatible client.
+    """
+    from contextmemory.engine.ollama import OllamaChatClient
+
+    root = base_url.rstrip("/")
+    try:
+        resp = httpx.get(f"{root}/api/tags", timeout=1.0)
+        if resp.status_code == 200:
+            return OllamaChatClient(root, model, timeout=timeout)
+    except httpx.HTTPError:
+        pass
+    return OpenAICompatClient(root, api_key, model, timeout=timeout)
 
 
 def _write_results(path: str, results: list[ReplayResult]) -> None:
@@ -86,10 +116,8 @@ def _cmd_eval(args: argparse.Namespace) -> int:
     if args.max_instances:
         instances = instances[: args.max_instances]
 
-    reader = OpenAICompatClient(
-        base_url=args.reader_api_base,
-        api_key=args.reader_api_key,
-        model=args.reader_model,
+    reader = make_reader(
+        args.reader_api_base, args.reader_api_key, args.reader_model
     )
     factory = lambda: _SYSTEMS[args.system](reader)  # noqa: E731
     results = replay(instances, factory)
@@ -103,10 +131,10 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         print(f"  {qtype}: {report.per_type[qtype]:.4f} ({report.counts[qtype]})")
 
     if args.judge_model:
-        judge = OpenAICompatClient(
-            base_url=args.judge_api_base or args.reader_api_base,
-            api_key=args.judge_api_key or args.reader_api_key,
-            model=args.judge_model,
+        judge = make_reader(
+            args.judge_api_base or args.reader_api_base,
+            args.judge_api_key or args.reader_api_key,
+            args.judge_model,
         )
         judged_report, labeled = judge_results(results, judge)
         _write_results(args.out, labeled)
@@ -123,10 +151,8 @@ def _cmd_eval(args: argparse.Namespace) -> int:
 
 
 def _cmd_dims(args: argparse.Namespace) -> int:
-    reader = OpenAICompatClient(
-        base_url=args.reader_api_base,
-        api_key=args.reader_api_key,
-        model=args.reader_model,
+    reader = make_reader(
+        args.reader_api_base, args.reader_api_key, args.reader_model
     )
     factory = lambda: _SYSTEMS[args.system](reader)  # noqa: E731
     reports = run_dimensions(default_scenarios(), factory)
@@ -162,24 +188,28 @@ def _cmd_bench(args: argparse.Namespace) -> int:
 
 
 def _cmd_demo(args: argparse.Namespace) -> int:
+    from contextmemory.engine.ollama import DEFAULT_BASE_URL
     from contextmemory.tui import run_tui
 
-    run_tui(offline=not args.live, container_tag=args.container)
+    run_tui(
+        offline=not args.live,
+        container_tag=args.container,
+        base_url=args.url or DEFAULT_BASE_URL,
+        model=args.model,
+        auto_launch=args.auto_launch,
+    )
     return 0
 
 
 def _cmd_ask(args: argparse.Namespace) -> int:
     from contextmemory.api import MemoryClient
-    from contextmemory.eval.protocol import OpenAICompatClient
     from contextmemory.tui.scenarios import seed_cells
 
     client = MemoryClient(args.container, embedder=None)
     for cell in seed_cells():
         client.engine.store.reconcile(cell)
-    reader = OpenAICompatClient(
-        base_url=args.reader_api_base,
-        api_key=args.reader_api_key,
-        model=args.reader_model,
+    reader = make_reader(
+        args.reader_api_base, args.reader_api_key, args.reader_model
     )
     answer, report = client.ask(args.question, reader, question_date=None)
     print(f"question: {args.question}")
@@ -250,8 +280,20 @@ def main(argv: list[str] | None = None) -> int:
         "demo", help="launch the TUI brain (offline scripted demo by default)"
     )
     p_demo.add_argument("--live", action="store_true",
-                        help="use a local model for extraction/answers")
+                        help="use a local Ollama model for extraction/answers")
     p_demo.add_argument("--container", default="brain")
+    p_demo.add_argument(
+        "--url", default=None,
+        help="Ollama base URL (default http://localhost:11434)",
+    )
+    p_demo.add_argument(
+        "--model", default=None,
+        help="Ollama model to use (e.g. qwen3:8b); default = first pulled model",
+    )
+    p_demo.add_argument(
+        "--auto-launch", action="store_true",
+        help="launch `ollama serve` under the hood if not already running",
+    )
     p_demo.set_defaults(func=_cmd_demo)
 
     p_ask = sub.add_parser("ask", help="ask the memory brain a question")
