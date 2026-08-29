@@ -41,25 +41,33 @@ runs entirely on your laptop.
 
 ## Quickstart
 
-Three commands cover everything. Clone once, then:
+One command takes you from a bare machine to the running brain:
 
 ```bash
 git clone https://github.com/RaghavapriyanSaravanapriyan/contextmemory.git
 cd contextmemory
 ```
 
-| What | One command |
+Then run the launcher for your OS — it checks every dependency, installs
+whatever is missing, builds the C++ engine, and launches the TUI:
+
+| OS | One command |
 |---|---|
-| **Install + run everything** | `./run.sh --live --model qwen3:4b` |
-| **Run the whole test suite** | `./scripts/test-all.sh` |
-| **Launch the TUI brain** | `./run.sh` |
+| macOS / Linux | `./run.sh` |
+| Windows (cmd.exe) | `run.bat` |
+| Windows (PowerShell) | `.\run.ps1` |
+| Any OS | `python run.py` |
 
-Each one-liner installs what it needs (`./run.sh` sets up `uv`, dependencies,
-and the C++ engine automatically). **No model, no API key, no database, no
-cloud** for the offline demo; add `--live` and your local model for the full
-experience.
+**No model, no API key, no database, no cloud** for the offline demo; add
+`--live` and your local model for the full experience.
 
-### Launch the TUI with your model
+### Live demo with your model
+
+Works with **any model Ollama serves** — qwen, llama, gemma, or anything you've
+pulled. Add `--live` to connect to / auto-launch Ollama, `--model` to pick a
+model up front, `--url` for a custom endpoint:
+
+macOS / Linux:
 
 ```bash
 ./run.sh                                   # offline demo, zero config
@@ -68,8 +76,18 @@ experience.
 ./run.sh --live --model qwen3:4b --url http://localhost:11434
 ```
 
-Inside the TUI, press `O` to open the **Connect to Ollama** screen — it has
-every field you need, right there:
+Windows (cmd.exe):
+
+```cmd
+run.bat
+run.bat --live
+run.bat --live --model qwen3:4b
+run.bat --live --model qwen3:4b --url http://localhost:11434
+```
+
+Inside the TUI, press `O` to open the **Connect to Ollama** screen — endpoint,
+API key, and model are all editable right there, and the TUI launches
+`ollama serve` itself if nothing is listening:
 
 ```text
 Connect to Ollama
@@ -79,31 +97,27 @@ Connect to Ollama
   → pick a model from the list
 ```
 
-Endpoint, API key, and model are all editable in the TUI — edit the URL or key,
-rescan, and pick any model Ollama serves. Or pass everything on the command
-line with `--url` and `--model`. The TUI launches `ollama serve` itself if
-nothing is listening, so the whole flow is one command.
-
-### Run the whole test suite
-
-```bash
-./scripts/test-all.sh
-```
-
-Runs the C++ core tests, Python tests, lint, and the microsecond latency
-bench — no model, no API key.
+`remember: <fact>` stores a fact through LLM extraction; ask questions and the
+brain answers with citations (`[M2]`), routing, and token telemetry. Other
+keys: `1` Brain · `2` Timeline · `3` Why · `B` Bench race · `H` Health ·
+`R` Replay · `Q` Quit.
 
 ---
 
 ## Install
 
-Requirements: **Python 3.11+, a C++ compiler, and CMake**. That's it.
+Requirements: **Python 3.11+ and an internet connection** — everything else is
+fetched automatically. The one-command flow above is the supported path; here
+is what it does under the hood:
 
-```bash
-git clone https://github.com/RaghavapriyanSaravanapriyan/contextmemory.git
-cd contextmemory
-./run.sh
-```
+1. **Python 3.11+** — `uv` fetches a managed interpreter if your system one is
+   too old.
+2. **`uv`** — installed via the official one-liner (the only external tool).
+3. **C++ compiler** — Linux: `g++` via your package manager; macOS: Xcode
+   Command Line Tools; Windows: MSVC Build Tools via `winget`.
+4. **CMake + Ninja** — installed as wheels during the build (no system install).
+5. **Ollama** — only for `--live` mode.
+6. **Python deps + C++ core** — `uv sync` builds the engine.
 
 Or install the pieces explicitly:
 
@@ -113,29 +127,6 @@ uv sync --extra dev          # installs deps and builds the C++ core
 
 Everything is a library you import, a CLI you call, and a C++ core you can
 benchmark. No server to start, no Redis, no container.
-
-### Live brain with Ollama
-
-ContextMemory works with **any model Ollama serves** — qwen, llama, gemma, and
-anything you've pulled. Ollama can be running in another terminal or as a
-service; if nothing is listening, the TUI starts `ollama serve` itself.
-
-```bash
-./run.sh --live                     # connect to / launch Ollama
-./run.sh --live --model qwen3:4b    # pick the model up front
-./run.sh --live --model qwen3:4b --url http://localhost:11434
-```
-
-Inside the TUI:
-
-1. Press `O` to open the **Connect to Ollama** screen — scan models, or launch
-   `ollama serve` under the hood with one keystroke.
-2. Pick a model. You're live.
-3. `remember: <fact>` stores a fact through LLM extraction; ask questions and
-   the brain answers with citations (`[M2]`), routing, and token telemetry.
-
-Press `O` any time to switch models. `Q` quits. Other views: `1` Brain ·
-`2` Timeline · `3` Why · `B` Bench race · `H` Health · `R` Replay.
 
 ---
 
@@ -148,15 +139,20 @@ lint, and the microsecond latency bench. No model, no API key:
 ./scripts/test-all.sh
 ```
 
+(Windows: run this inside Git Bash or WSL, or run `uv run pytest` and
+`uv run ruff check contextmemory tests` directly in PowerShell.)
+
 What it runs:
 
 ```text
 C++ core      → 11 test suites / 49 checks   (capture, reconcile, versioning,
                                                projections, packing, persistence)
-Python        → 52 tests                     (wrapper, eval harness, CLI, API)
+Python        → 53 tests                     (wrapper, eval harness, CLI, API)
 Lint          → ruff (clean)
-Latency bench → ingest p50 ~0.009ms · answer p50 ~0.111ms  (200 sessions)
+Latency bench → ingest p50 ~0.05ms · answer p50 ~0.13ms  (200 sessions)
 ```
+
+---
 
 ## Benchmark
 
@@ -305,9 +301,11 @@ contextmemory/                 the Python package
   eval/                        benchmark rig (replay, dimensions, latency)
   tui/                         Textual brain (Live, Timeline, Why, Bench, Health)
   api.py, cli.py               MemoryClient API + contextmemory CLI
-tests/                         Python test suite (52 tests)
+tests/                         Python test suite (53 tests)
+run.py                         one-command installer + launcher (all OSes)
+run.sh                         macOS/Linux entry point (thin wrapper)
+run.bat, run.ps1               Windows entry points (cmd.exe / PowerShell)
 scripts/test-all.sh            one command: full deterministic suite (no model)
-run.sh                         one-shot installer + TUI launcher (Ollama-aware)
 benchmarks/data/               LongMemEval datasets (oracle + cleaned)
 reports/                       research + architecture decisions
 tasks/active/                  what we're working on
