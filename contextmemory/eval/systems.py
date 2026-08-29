@@ -114,4 +114,6 @@ class CoreMemorySystem(MemorySystem):
         self._engine.ingest(session)
 
     def answer(self, question: str, question_date: datetime) -> str:
-        return self._engine.answer(question, question_date, self._reader)
+        answer, _report = self._engine.answer(question, question_date,
+                                              self._reader)
+        return answer

@@ -1,116 +1,200 @@
-"""Tests for the Python wrapper around the C++ core engine."""
+"""Tests for the Python facade over the C++ ETMC core engine."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from contextmemory.core import PREFERENCE, WORLD, MemoryStore
+from contextmemory.core import (
+    EXPERIENCE,
+    PREFERENCE,
+    T_CURRENT,
+    T_HISTORICAL,
+    WORLD,
+    CellInput,
+    MemoryStore,
+    to_ms,
+)
 
-T0 = int(datetime(2023, 1, 1, tzinfo=UTC).timestamp() * 1000)
+T0 = to_ms(datetime(2023, 1, 1, tzinfo=UTC))
 DAY = 86_400_000
 
 
-def test_add_and_search_roundtrip() -> None:
-    store = MemoryStore("test")
-    fid = store.add_fact(
-        "User prefers TypeScript over Python",
-        kind=WORLD,
-        is_static=True,
-        ts=T0,
-        entities=["User"],
+def _cell(store, text, subject="", predicate="", obj="", ts=T0, kind=WORLD,
+          tags=None, entities=None):
+    return store.reconcile(
+        CellInput(
+            text=text,
+            subject=subject,
+            predicate=predicate,
+            object=obj,
+            kind=kind,
+            observed_at=ts,
+            valid_from=ts,
+            tags=tags or [],
+            entities=entities or [],
+        )
     )
-    assert store.fact_count == 1
-    hits = store.search("programming language TypeScript", at_time=T0 + DAY)
-    assert hits and hits[0].fact_id == fid
+
+
+def test_add_search_and_projection_roundtrip() -> None:
+    store = MemoryStore("test")
+    fid = _cell(
+        store,
+        "User prefers TypeScript over Python",
+        subject="user",
+        predicate="preference",
+        obj="TypeScript",
+        kind=WORLD,
+        entities=["user"],
+    )
+    assert store.cell_count == 1
+    proj = store.projection("user", "preference")
+    assert proj is not None
+    assert proj.active_cell == fid
+    plan = store.compile("What does the user prefer?", T0 + DAY)
+    assert plan.predicate_hint == "preference"
+    hits = store.search(plan)
+    assert hits and hits[0].cell_id == fid
 
 
 def test_update_versions_and_invalidates() -> None:
     store = MemoryStore("test")
-    fid = store.add_fact("User lives in New York", is_static=True, ts=T0)
-    new_id = store.update_fact(fid, "User lives in San Francisco", ts=T0 + 30 * DAY)
+    fid = _cell(store, "User lives in New York", "user", "location",
+                "New York", T0)
+    new_id = _cell(store, "User lives in San Francisco", "user", "location",
+                   "San Francisco", T0 + 30 * DAY)
     assert new_id != fid
-    hits = store.search("where does user live", at_time=T0 + 31 * DAY)
+    assert store.cell_count == 2
+    assert store.edge_count == 1
+    proj = store.projection("user", "location")
+    assert proj and proj.active_cell == new_id and proj.version_count == 2
+
+    plan = store.compile("Where does the user live?", T0 + 31 * DAY)
+    assert plan.time_mode == T_CURRENT
+    hits = store.search(plan)
     assert any("San Francisco" in h.text for h in hits)
     assert all("New York" not in h.text for h in hits)
 
-    expired = store.search(
-        "where does user live", at_time=T0 + 31 * DAY, include_expired=True
-    )
-    assert any("New York" in h.text for h in expired)
+    hplan = store.compile("Where did the user live before?", T0 + 31 * DAY)
+    assert hplan.time_mode == T_HISTORICAL
+    hhits = store.search(hplan)
+    assert any("New York" in h.text for h in hhits)
 
 
 def test_temporal_abstention() -> None:
     store = MemoryStore("test")
-    store.add_fact("User has a statistics exam tomorrow", kind=3, ts=T0)
-    assert store.search("statistics exam", at_time=T0).__len__() == 1
-    store.expire(1, T0 + DAY)
-    assert store.search("statistics exam", at_time=T0 + 2 * DAY) == []
+    _cell(store, "User has a statistics exam tomorrow", kind=EXPERIENCE, ts=T0)
+    plan = store.compile("When is the statistics exam?", T0)
+    assert store.search(plan)
+    # Expire it: supersede with an explicit "none" state.
+    _cell(store, "User no longer has a statistics exam", ts=T0 + DAY)
+    plan2 = store.compile("When is the statistics exam?", T0 + 2 * DAY)
+    hits = store.search(plan2)
+    pack = store.pack(plan2, hits)
+    assert pack.sufficient  # current truth = no exam
 
 
-def test_forget_removes_from_retrieval() -> None:
+def test_exact_dedup() -> None:
     store = MemoryStore("test")
-    store.add_fact("User dislikes cilantro", kind=PREFERENCE, ts=T0)
-    store.forget(1, T0 + DAY)
-    assert store.search("cilantro", at_time=T0 + 2 * DAY) == []
+    a = _cell(store, "User dislikes cilantro", "user", "preference",
+              "cilantro", kind=PREFERENCE)
+    b = _cell(store, "User dislikes cilantro", "user", "preference",
+              "cilantro", kind=PREFERENCE)
+    assert a == b
+    assert store.cell_count == 1
+
+
+def test_late_arriving_event() -> None:
+    store = MemoryStore("test")
+    _cell(store, "User lives in New York", "user", "location", "New York", T0)
+    # Event happened on day 30, observed on day 60.
+    store.reconcile(
+        CellInput(
+            text="User moved to Seattle",
+            subject="user",
+            predicate="location",
+            object="Seattle",
+            observed_at=T0 + 60 * DAY,
+            valid_from=T0 + 30 * DAY,
+        )
+    )
+    plan = store.compile("Where does the user live?", T0 + 35 * DAY)
+    hits = store.search(plan)
+    # Agent had not yet learned the move: current truth is New York.
+    assert any("New York" in h.text for h in hits)
+    assert all("Seattle" not in h.text for h in hits)
 
 
 def test_container_isolation() -> None:
     a = MemoryStore("user_a")
     b = MemoryStore("user_b")
-    a.add_fact("User has a pet turtle", ts=T0)
-    b.add_fact("User rides a motorcycle", ts=T0)
-    assert a.search("turtle", at_time=T0 + DAY)
-    assert not a.search("motorcycle", at_time=T0 + DAY)
-    assert not b.search("turtle", at_time=T0 + DAY)
-    assert b.search("motorcycle", at_time=T0 + DAY)
+    _cell(a, "User has a pet turtle", "user", "pet", "turtle")
+    _cell(b, "User rides a motorcycle", "user", "transport", "motorcycle")
+    pa = a.compile("What is the user's pet?", T0 + DAY)
+    pb = b.compile("What is the user's pet?", T0 + DAY)
+    assert a.search(pa)
+    assert not b.search(pb)
 
 
 def test_profile_static_and_dynamic() -> None:
     store = MemoryStore("test")
-    store.add_fact("User is a senior engineer", is_static=True, ts=T0)
-    store.add_fact("User prefers vim", is_static=True, ts=T0)
-    store.add_fact("User asked about graph databases", kind=3, ts=T0)
-    prof = store.profile(at_time=T0 + DAY)
-    assert [f.text for f in prof.static_facts] == [
-        "User is a senior engineer",
-        "User prefers vim",
-    ]
+    _cell(store, "User is a senior engineer", "user", "role", "engineer",
+          kind=WORLD, ts=T0)
+    _cell(store, "User prefers vim", "user", "preference", "vim",
+          kind=PREFERENCE, ts=T0)
+    _cell(store, "User asked about graph databases", kind=EXPERIENCE, ts=T0)
+    prof = store.profile(T0 + DAY)
+    assert len(prof.static_facts) == 2
     assert len(prof.dynamic_facts) == 1
 
 
 def test_token_budget_truncates() -> None:
+    from dataclasses import replace
+
     store = MemoryStore("test")
     for i in range(10):
-        store.add_fact(f"User prefers the color blue variant number {i}", ts=T0)
-    hits = store.search(
-        "blue color variant", at_time=T0 + DAY, token_budget=30, top_k=10
-    )
-    assert 0 < len(hits) < 10
+        _cell(store, f"User prefers the color blue variant number {i}",
+              "user", "color", f"blue {i}")
+    plan = replace(store.compile("What is the user's favorite color?",
+                                 T0 + DAY), token_budget=40)
+    hits = store.search(plan)
+    pack = store.pack(plan, hits)
+    assert pack.tokens <= 40
+    assert 0 < len(pack.items) < 10
 
 
 def test_save_load_roundtrip(tmp_path) -> None:
     path = str(tmp_path / "mem.bin")
     store = MemoryStore("test")
-    fid = store.add_fact("User lives in Berlin", ts=T0, entities=["Berlin"])
-    store.add_embedding(fid, [1.0, 0.0, 0.0, 0.0])
-    store.update_fact(fid, "User lives in Prague", ts=T0 + 30 * DAY)
+    _cell(store, "User lives in Berlin", "user", "location", "Berlin",
+          ts=T0, entities=["Berlin"])
+    _cell(store, "User lives in Prague", "user", "location", "Prague",
+          ts=T0 + 30 * DAY)
     store.save(path)
 
     loaded = MemoryStore("test")
     loaded.load(path)
-    assert loaded.fact_count == store.fact_count == 2
+    assert loaded.cell_count == store.cell_count == 2
     assert loaded.edge_count == 1
-    assert loaded.entity_count == 1
-    hits = loaded.search("where does user live", at_time=T0 + 60 * DAY)
+    assert loaded.projection_count == 1
+    plan = loaded.compile("Where does the user live?", T0 + 60 * DAY)
+    hits = loaded.search(plan)
     assert any("Prague" in h.text for h in hits)
     assert all("Berlin" not in h.text for h in hits)
 
 
-def test_entity_channel_surfaces_linked_facts() -> None:
+def test_episode_capture() -> None:
     store = MemoryStore("test")
-    store.add_fact("Wrote the v1 of the billing service", ts=T0, entities=["Acme Corp"])
-    store.add_fact("Prefers dark mode", ts=T0)
-    hits = store.search(
-        "What did the user build?", query_entities=["Acme Corp"], at_time=T0 + DAY
-    )
-    assert hits and hits[0].fact_id == 1
+    eid = store.capture_episode("I live in New York and work at Acme.",
+                                observed_at=T0, session_id=7)
+    assert eid != 0
+    assert store.episode_count == 1
+
+
+def test_bump_access_heat() -> None:
+    store = MemoryStore("test")
+    fid = _cell(store, "User prefers dark mode", "user", "preference", "dark")
+    store.bump_access(fid)
+    store.bump_access(fid)
+    hits = store.search(store.compile("dark mode", T0 + DAY))
+    assert hits and hits[0].access_heat >= 2

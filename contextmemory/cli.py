@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Callable
+from datetime import datetime
 
 from contextmemory.engine.embedder import DeterministicHashEmbedder
 from contextmemory.engine.extractor import LLMExtractor
@@ -160,6 +161,51 @@ def _cmd_bench(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_demo(args: argparse.Namespace) -> int:
+    from contextmemory.tui import run_tui
+
+    run_tui(offline=not args.live, container_tag=args.container)
+    return 0
+
+
+def _cmd_ask(args: argparse.Namespace) -> int:
+    from contextmemory.api import MemoryClient
+    from contextmemory.eval.protocol import OpenAICompatClient
+    from contextmemory.tui.scenarios import seed_cells
+
+    client = MemoryClient(args.container, embedder=None)
+    for cell in seed_cells():
+        client.engine.store.reconcile(cell)
+    reader = OpenAICompatClient(
+        base_url=args.reader_api_base,
+        api_key=args.reader_api_key,
+        model=args.reader_model,
+    )
+    answer, report = client.ask(args.question, reader, question_date=None)
+    print(f"question: {args.question}")
+    print(f"route:    {report.time_mode_name}")
+    print(f"tokens:   {report.tokens}")
+    print(f"answer:   {answer}")
+    return 0
+
+
+def _cmd_ingest(args: argparse.Namespace) -> int:
+    from contextmemory.api import MemoryClient
+    from contextmemory.eval.protocol import Session, Turn
+
+    client = MemoryClient(args.container, embedder=None)
+    turns = [
+        Turn(role=role, content=content)
+        for role, content in (part.split(":", 1) for part in args.turn)
+    ]
+    session = Session(session_id=args.session_id, timestamp=datetime.now(),
+                      turns=turns)
+    rep = client.session(session)
+    print(f"cells:   {rep.cells} (new {rep.new_cells}, dup {rep.dup_cells})")
+    print(f"capture: {rep.capture_ms:.3f}ms  extract: {rep.extract_ms:.3f}ms")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run memory evaluations.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -199,6 +245,30 @@ def main(argv: list[str] | None = None) -> int:
     p_bench.add_argument("--probes", nargs="*", default=None)
     p_bench.add_argument("--seed", type=int, default=42)
     p_bench.set_defaults(func=_cmd_bench)
+
+    p_demo = sub.add_parser(
+        "demo", help="launch the TUI brain (offline scripted demo by default)"
+    )
+    p_demo.add_argument("--live", action="store_true",
+                        help="use a local model for extraction/answers")
+    p_demo.add_argument("--container", default="brain")
+    p_demo.set_defaults(func=_cmd_demo)
+
+    p_ask = sub.add_parser("ask", help="ask the memory brain a question")
+    p_ask.add_argument("question")
+    p_ask.add_argument("--container", default="brain")
+    p_ask.add_argument("--reader-api-base", required=True)
+    p_ask.add_argument("--reader-api-key", default="EMPTY")
+    p_ask.add_argument("--reader-model", required=True)
+    p_ask.set_defaults(func=_cmd_ask)
+
+    p_ingest = sub.add_parser(
+        "ingest", help="ingest a turn into memory (role:content)"
+    )
+    p_ingest.add_argument("--container", default="brain")
+    p_ingest.add_argument("--session-id", default="s1")
+    p_ingest.add_argument("--turn", action="append", required=True)
+    p_ingest.set_defaults(func=_cmd_ingest)
 
     args = parser.parse_args(argv)
     return args.func(args)

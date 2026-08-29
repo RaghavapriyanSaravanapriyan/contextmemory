@@ -2,7 +2,7 @@
 
 The API mirrors the surface of the leading memory layers (Supermemory's
 add/search/profile, Mem0's add/search) so head-to-head comparisons map
-cleanly. It is a thin orchestration layer over the C++ core + extraction
+cleanly. It is a thin orchestration layer over the C++ ETMC core + extraction
 engine.
 """
 
@@ -10,10 +10,24 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from .core import MemoryStore, Profile, SearchHit
+from .core import (
+    WORLD,
+    CellInput,
+    EvidencePack,
+    MemoryStore,
+    Profile,
+    SearchHit,
+    StateProjection,
+)
 from .engine.embedder import Embedder
 from .engine.extractor import Extractor, LLMExtractor, NullExtractor
-from .engine.memory import DEFAULT_TOKEN_BUDGET, DEFAULT_TOP_K, MemoryEngine
+from .engine.memory import (
+    DEFAULT_TOKEN_BUDGET,
+    DEFAULT_TOP_K,
+    IngestReport,
+    MemoryEngine,
+    RecallReport,
+)
 from .eval.protocol import ReaderClient, Session
 
 
@@ -37,21 +51,41 @@ class MemoryClient:
     def container_tag(self) -> str:
         return self._engine.store.container_tag
 
+    @property
+    def engine(self) -> MemoryEngine:
+        return self._engine
+
     # --- write path --------------------------------------------------------
 
-    def add(self, content: str, *, ts: int | datetime = 0, ref: str = "") -> int:
-        """Store a single fact directly (no extraction)."""
+    def add(
+        self,
+        content: str,
+        *,
+        subject: str = "",
+        predicate: str = "",
+        object: str = "",
+        kind: int = WORLD,
+        ts: int | datetime = 0,
+        ref: str = "",
+    ) -> int:
+        """Store a single cell directly (no extraction)."""
         ts_ms = _ts_ms(ts)
-        return self._engine.store.add_fact(
-            content, kind=0, is_static=False, confidence=1.0, ts=ts_ms, ref=ref
+        return self._engine.store.reconcile(
+            CellInput(
+                text=content,
+                subject=subject,
+                predicate=predicate,
+                object=object,
+                kind=kind,
+                observed_at=ts_ms,
+                valid_from=ts_ms,
+                source_ref=ref,
+            )
         )
 
-    def session(self, session: Session) -> int:
+    def session(self, session: Session) -> IngestReport:
         """Ingest a whole conversation through the extraction pipeline."""
         return self._engine.ingest(session)
-
-    def forget(self, fact_id: int, ts: int | datetime = 0) -> None:
-        self._engine.store.forget(fact_id, _ts_ms(ts))
 
     # --- read path ---------------------------------------------------------
 
@@ -63,23 +97,55 @@ class MemoryClient:
         top_k: int = DEFAULT_TOP_K,
         token_budget: int = DEFAULT_TOKEN_BUDGET,
     ) -> list[SearchHit]:
+        report = self._engine.recall(
+            query,
+            question_date,
+            token_budget=token_budget,
+            top_k=top_k,
+        )
+        return report.hits
+
+    def recall(
+        self,
+        query: str,
+        *,
+        question_date: datetime | None = None,
+        top_k: int = DEFAULT_TOP_K,
+        token_budget: int = DEFAULT_TOKEN_BUDGET,
+    ) -> RecallReport:
         return self._engine.recall(
             query,
             question_date,
-            top_k=top_k,
             token_budget=token_budget,
+            top_k=top_k,
+        )
+
+    def ask(
+        self,
+        query: str,
+        reader: ReaderClient,
+        *,
+        question_date: datetime | None = None,
+        token_budget: int = DEFAULT_TOKEN_BUDGET,
+    ) -> tuple[str, RecallReport]:
+        """Recall evidence, pack it, and generate an answer with a reader."""
+        return self._engine.answer(
+            query, question_date, reader, token_budget=token_budget
         )
 
     def profile(self, question_date: datetime | None = None) -> Profile:
         return self._engine.profile(question_date)
 
+    def projection(self, subject: str, predicate: str) -> StateProjection | None:
+        return self._engine.projection(subject, predicate)
+
     # --- persistence -------------------------------------------------------
 
     def save(self, path: str) -> None:
-        self._engine.store.save(path)
+        self._engine.save(path)
 
     def load(self, path: str) -> None:
-        self._engine.store.load(path)
+        self._engine.load(path)
 
 
 def _ts_ms(ts: int | datetime) -> int:
@@ -89,13 +155,18 @@ def _ts_ms(ts: int | datetime) -> int:
 
 
 __all__ = [
+    "CellInput",
+    "EvidencePack",
+    "IngestReport",
     "LLMExtractor",
     "MemoryClient",
     "MemoryStore",
     "NullExtractor",
     "Profile",
+    "RecallReport",
     "SearchHit",
     "Session",
+    "StateProjection",
     "from_reader_client",
 ]
 

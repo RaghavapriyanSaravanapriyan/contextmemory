@@ -50,6 +50,29 @@ nb::list results_list(const std::vector<SearchResult>& results) {
     return out;
 }
 
+SearchResult result_from_dict(const nb::dict& d) {
+    SearchResult r;
+    r.cell_id = nb::cast<uint64_t>(d["cell_id"]);
+    r.text = nb::cast<std::string>(d["text"]);
+    r.subject = nb::cast<std::string>(d["subject"]);
+    r.predicate = nb::cast<std::string>(d["predicate"]);
+    r.object = nb::cast<std::string>(d["object"]);
+    r.score = nb::cast<float>(d["score"]);
+    r.kind = static_cast<CellKind>(nb::cast<int>(d["kind"]));
+    r.status = static_cast<CellStatus>(nb::cast<int>(d["status"]));
+    r.confidence = nb::cast<float>(d["confidence"]);
+    r.salience = nb::cast<float>(d["salience"]);
+    r.access_heat = nb::cast<uint32_t>(d["access_heat"]);
+    r.valid_from = nb::cast<int64_t>(d["valid_from"]);
+    r.valid_until = nb::cast<int64_t>(d["valid_until"]);
+    r.root_id = nb::cast<uint64_t>(d["root_id"]);
+    r.parent_id = nb::cast<uint64_t>(d["parent_id"]);
+    r.source_ref = nb::cast<std::string>(d["source_ref"]);
+    r.tags = nb::cast<std::vector<std::string>>(d["tags"]);
+    r.projection_hit = nb::cast<bool>(d["projection_hit"]);
+    return r;
+}
+
 nb::dict compiled_dict(const CompiledQuery& cq) {
     nb::dict d;
     d["time_mode"] = static_cast<int>(cq.plan.time_mode);
@@ -179,6 +202,11 @@ NB_MODULE(_core, m) {
              nb::arg("subject"), nb::arg("predicate"),
              "Current state projection, or None.")
         .def("bump_access", &Store::bump_access, nb::arg("cell_id"))
+        .def("add_embedding",
+             [](Store& s, uint64_t cell_id, const std::vector<float>& vec) {
+                 s.add_embedding(cell_id, vec);
+             },
+             nb::arg("cell_id"), nb::arg("vector"))
 
         // --- query compilation ---
         .def("compile",
@@ -229,13 +257,12 @@ NB_MODULE(_core, m) {
              nb::arg("predicate_hint") = std::string(),
              nb::arg("query_vec") = std::vector<float>(),
              "Deterministic search over a compiled plan.")
-        .def("pack",
-             [](const Store& s, const std::string& text, int64_t at_time,
-                int time_mode, int64_t time_start, int64_t time_end,
-                uint32_t candidate_cap, uint32_t expansion_cap,
-                size_t token_budget, int relation_mode) {
+        .def("pack_hits",
+             [](const Store& s, const std::vector<nb::dict>& hits,
+                int64_t at_time, int time_mode, int64_t time_start,
+                int64_t time_end, uint32_t candidate_cap,
+                uint32_t expansion_cap, size_t token_budget, int relation_mode) {
                  QueryPlan plan;
-                 plan.text = text;
                  plan.time_mode = static_cast<TimeMode>(time_mode);
                  plan.time_start = time_start;
                  plan.time_end = time_end;
@@ -243,15 +270,17 @@ NB_MODULE(_core, m) {
                  plan.expansion_cap = expansion_cap;
                  plan.token_budget = token_budget;
                  plan.relation_mode = static_cast<RelationMode>(relation_mode);
-                 auto ranked = s.search(plan, {});
+                 std::vector<SearchResult> ranked;
+                 ranked.reserve(hits.size());
+                 for (const auto& d : hits) ranked.push_back(result_from_dict(d));
                  return pack_dict(s.pack(ranked, plan));
              },
-             nb::arg("text"), nb::arg("at_time") = 0,
+             nb::arg("hits"), nb::arg("at_time") = 0,
              nb::arg("time_mode") = 0, nb::arg("time_start") = 0,
              nb::arg("time_end") = 0, nb::arg("candidate_cap") = 32u,
              nb::arg("expansion_cap") = 1u, nb::arg("token_budget") = size_t{512},
              nb::arg("relation_mode") = 0,
-             "Search + minimum-sufficient evidence pack.")
+             "Pack ranked hits into minimum-sufficient evidence.")
         .def("profile",
              [](const Store& s, int64_t at_time, uint32_t top_k) {
                  auto p = s.profile(at_time, top_k);
