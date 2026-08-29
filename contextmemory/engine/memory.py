@@ -12,9 +12,11 @@ answer so latency and token claims are measurable per stage.
 
 from __future__ import annotations
 
+import contextlib
 import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from pathlib import Path
 
 from ..core import (
     CellInput,
@@ -102,6 +104,8 @@ class MemoryEngine:
         container_tag: str = "",
         extractor: Extractor | None = None,
         embedder: Embedder | None = None,
+        *,
+        journal_path: str | Path | None = None,
     ) -> None:
         self._store = MemoryStore(container_tag)
         self._extractor: Extractor = extractor or NullExtractor()
@@ -109,6 +113,15 @@ class MemoryEngine:
         self._cells_ingested = 0
         self._extract_failures = 0
         self._fallback_count = 0
+        self._journal: str | None = str(journal_path) if journal_path else None
+        if self._journal:
+            with contextlib.suppress(OSError, RuntimeError, ValueError):
+                self._store.load(self._journal)
+
+    def persist(self) -> None:
+        """Write the memory journal to disk (no-op without a journal path)."""
+        if self._journal:
+            self._store.save(self._journal)
 
     @property
     def store(self) -> MemoryStore:
@@ -181,6 +194,9 @@ class MemoryEngine:
             for (_, cell_id), vec in zip(created, vectors, strict=True):
                 self._store.add_embedding(cell_id, vec)
             report.embed_ms = (time.perf_counter() - t0) * 1000
+
+        with contextlib.suppress(OSError, RuntimeError, ValueError):
+            self.persist()
 
         return report
 

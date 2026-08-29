@@ -32,7 +32,13 @@ from .eval.protocol import ReaderClient, Session
 
 
 class MemoryClient:
-    """The public memory layer API for one container tag."""
+    """The public memory layer API for one container tag.
+
+    Memory is persisted to a per-container journal automatically, so a fresh
+    client in a later process recalls what earlier sessions stored — the
+    "context follows you" guarantee. Pass ``journal_path=None`` to keep a
+    client in-memory only.
+    """
 
     def __init__(
         self,
@@ -40,11 +46,17 @@ class MemoryClient:
         *,
         extractor: Extractor | None = None,
         embedder: Embedder | None = None,
+        journal_path: str | None = None,
     ) -> None:
+        if journal_path is None:
+            from .config import journal_path as _jp
+
+            journal_path = str(_jp(container_tag))
         self._engine = MemoryEngine(
             container_tag=container_tag,
             extractor=extractor or NullExtractor(),
             embedder=embedder,
+            journal_path=journal_path,
         )
 
     @property

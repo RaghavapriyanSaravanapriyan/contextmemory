@@ -31,6 +31,24 @@ def _config_dir() -> Path:
     return Path(base) / PROJECT
 
 
+def _data_dir() -> Path:
+    """Where durable memory journals live (per-user, per-platform)."""
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    elif platform.system() == "Darwin":
+        base = str(Path.home() / "Library" / "Application Support")
+    else:
+        base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    return Path(base) / PROJECT
+
+
+def journal_path(container: str) -> Path:
+    """Path to the durable memory journal for a container tag."""
+    tag = container or "default"
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in tag)
+    return _data_dir() / f"{safe}.cm.bin"
+
+
 def _config_path() -> Path:
     return _config_dir() / "config.json"
 
@@ -92,4 +110,4 @@ class AppConfig:
         self.save()
 
 
-__all__ = ["AppConfig"]
+__all__ = ["AppConfig", "journal_path"]

@@ -65,7 +65,8 @@ STATUS_COLORS = {"offline": "red", "connected": "green", "managed": "yellow",
 class WelcomeScreen(Screen):
     """Screen 1 — elegant welcome. Enter starts."""
 
-    BINDINGS = [("enter", "start", "Get started"), ("q", "quit", "Quit")]
+    BINDINGS = [("enter", "start", "Get started"), ("d", "demo", "Run demo"),
+                ("q", "quit", "Quit")]
 
     def compose(self) -> ComposeResult:
         yield Static("", id="spacer")
@@ -73,6 +74,7 @@ class WelcomeScreen(Screen):
         yield Static("Memory infrastructure for AI systems", id="tagline")
         yield Static("", id="spacer2")
         yield Button("Get Started", id="start-btn", variant="primary")
+        yield Button("Run Offline Demo", id="demo-btn")
         yield Static("Persistent memory · Adaptive retrieval · Minimal config",
                      id="footer-line")
 
@@ -82,9 +84,14 @@ class WelcomeScreen(Screen):
     def action_start(self) -> None:
         self.dismiss(None)
 
+    def action_demo(self) -> None:
+        self.dismiss("demo")
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "start-btn":
             self.action_start()
+        elif event.button.id == "demo-btn":
+            self.action_demo()
 
 
 class BuildingScreen(Screen):
@@ -332,6 +339,9 @@ class Dashboard(Screen):
             with Vertical(id="sidebar"):
                 yield Static("CONTEXTMEMORY", id="brand")
                 yield Static("", id="statusline")
+                with Horizontal(id="quick-actions"):
+                    yield Button("RUN DEMO", id="run-demo", variant="primary")
+                    yield Button("ASK", id="focus-ask")
                 nav = OptionList(id="nav")
                 for label in [
                     "1  Brain",
@@ -352,17 +362,23 @@ class Dashboard(Screen):
         self.app: MemoryBrainApp
         self._render_status()
         self.query_one("#nav", OptionList).focus()
-        self._show("brain")
+        self.run_worker(self._show("brain"))
 
-    def on_option_list_option_selected(
+    async def on_option_list_option_selected(
         self, event: OptionList.OptionSelected
     ) -> None:
         names = ["brain", "timeline", "why", "models", "retrieval", "perf",
                  "connections", "health"]
-        self._show(names[event.option_index])
+        await self._show(names[event.option_index])
 
-    def action_go(self, name: str) -> None:
-        self._show(name)
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "run-demo":
+            self.app.replay_demo()
+        elif event.button.id == "focus-ask":
+            await self._show("brain")
+
+    async def action_go(self, name: str) -> None:
+        await self._show(name)
 
     def action_ollama(self) -> None:
         self.app.action_connect_ollama()
@@ -379,10 +395,11 @@ class Dashboard(Screen):
             Text(" | ".join(parts), style=f"{STATUS_COLORS[app.ollama_state]}")
         )
 
-    def _show(self, name: str) -> None:
+    async def _show(self, name: str) -> None:
+        content = self.query_one("#content", Vertical)
+        await content.remove_children()
         app = self.app
         content = self.query_one("#content", Vertical)
-        content.remove_children()
         if name == "brain":
             content.mount(BrainView(app))
         elif name == "timeline":
@@ -566,6 +583,7 @@ class MemoryBrainApp(App):
     #tagline { text-align: center; color: $text; }
     #footer-line { text-align: center; color: $text-muted; }
     #start-btn { width: 24; margin: 1 0 0 0; }
+    #demo-btn { width: 24; margin: 1 0 0 0; }
     #prompt { text-align: center; text-style: bold; padding: 2 0 0 0; }
     #sub { text-align: center; color: $text-muted; }
     #building-options, #provider-options { margin: 1 0 0 0; }
@@ -577,6 +595,8 @@ class MemoryBrainApp(App):
     #sidebar { width: 30; border-right: heavy $primary; background: $panel; }
     #brand { text-style: bold; color: $accent; padding: 1 1 0 1; }
     #statusline { height: 1; padding: 0 1; }
+    #quick-actions { height: 3; padding: 0 1; }
+    #quick-actions Button { width: 1fr; margin: 0 1 0 0; }
     #nav { height: 1fr; }
     #content { height: 1fr; padding: 1 2; }
     #brain-pane { height: 1fr; }
@@ -626,6 +646,11 @@ class MemoryBrainApp(App):
             self._finish_boot()
 
     def _on_welcome(self, _: None | str | object = None) -> None:
+        if _ == "demo":
+            self.config.provider = ""
+            self._finish_boot()
+            self.call_after_refresh(self.replay_demo)
+            return
         if self.config.onboarded:
             self._finish_boot()
             return
@@ -745,30 +770,44 @@ class MemoryBrainApp(App):
     # --- demo replay -------------------------------------------------------
 
     def replay_demo(self) -> None:
+        if getattr(self, "_demo_running", False):
+            self._log("Demo already running.")
+            return
+        self._demo_running = True
         self._log("Replaying demo...")
-        self._client = MemoryClient(
-            self._container,
-            embedder=DeterministicHashEmbedder(),
-        )
-        if self.live_model:
-            self._client.set_extractor(
-                LLMExtractor(self.ollama.reader(self.live_model))
+        try:
+            self._client = MemoryClient(
+                self._container,
+                embedder=DeterministicHashEmbedder(),
             )
-        for cell in demo.seed_cells():
-            self._client.engine.store.reconcile(cell)
-        for step in self._scenario:
-            if step.label == "contradiction / update":
-                for cell in demo.update_cells():
-                    self._client.engine.store.reconcile(cell)
-                self._log("[contradiction / update] reconciled 2 cells")
-                continue
-            session = demo.demo_session(step)
-            if session is not None:
-                rep = self._client.session(session)
-                self._log(f"[{step.label}] ingested {rep.cells} cells "
-                          f"({rep.new_cells} new)")
-            elif step.is_question:
-                self._ask_with_trace(step.question)
+            self.tracker = RetrievalTracker()
+            self.last_answer = ("", "", 0, 0.0, "")
+            self.bench_rows = []
+            if self.live_model:
+                self._client.set_extractor(
+                    LLMExtractor(self.ollama.reader(self.live_model))
+                )
+            for cell in demo.seed_cells():
+                self._client.engine.store.reconcile(cell)
+            for step in self._scenario:
+                if step.label == "contradiction / update":
+                    for cell in demo.update_cells():
+                        self._client.engine.store.reconcile(cell)
+                    self._log("[contradiction / update] reconciled 2 cells")
+                    continue
+                session = demo.demo_session(step)
+                if session is not None:
+                    rep = self._client.session(session)
+                    self._log(f"[{step.label}] ingested {rep.cells} cells "
+                              f"({rep.new_cells} new)")
+                elif step.is_question:
+                    self._ask_with_trace(step.question)
+            self._log("Demo complete. Explore Timeline, Why, and Performance.")
+        except Exception as exc:  # noqa: BLE001 - keep demo visible and recoverable
+            self._log(f"Demo error: {exc}")
+        finally:
+            self._demo_running = False
+            self._refresh_status()
 
     # --- ask ---------------------------------------------------------------
 
