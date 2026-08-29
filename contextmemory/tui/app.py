@@ -384,7 +384,7 @@ class Dashboard(Screen):
         content = self.query_one("#content", Vertical)
         content.remove_children()
         if name == "brain":
-            content.mount(self.app.brain)
+            content.mount(BrainView(app))
         elif name == "timeline":
             content.mount(TimelinePane())
         elif name == "why":
@@ -404,19 +404,49 @@ class Dashboard(Screen):
 # --- content panes ---------------------------------------------------------
 
 
-class BrainPane(Static):
-    """The ask / remember / replay surface."""
+class BrainView(Vertical):
+    """Ask / remember / replay command center."""
 
     def __init__(self, app: MemoryBrainApp) -> None:
-        super().__init__("", id="brain-pane")
+        super().__init__(id="brain-pane")
         self._app = app
 
-    def render(self) -> str:
-        return (
-            "[bold]Ask the brain[/bold]   (type a question, or "
-            "'remember: <fact>' — press R to replay the demo)\n\n"
-            + "\n".join(self._app.log_lines[-6:])
+    def compose(self) -> ComposeResult:
+        yield Static("", id="brain-status")
+        yield Static("", id="brain-log")
+        yield Input(
+            placeholder="Ask the brain, or 'remember: <fact>' (R replays the demo)",
+            id="question-input",
         )
+
+    def on_mount(self) -> None:
+        self._refresh_status()
+        self._refresh_log()
+
+    def _refresh_status(self) -> None:
+        app = self._app
+        color = STATUS_COLORS[app.ollama_state]
+        model = app.live_model or app.config.model or "Automatic"
+        parts = [
+            ("Memory", "Healthy"),
+            ("Model", model),
+            ("Provider", app.config.provider or "Offline"),
+            ("Cache", "Adaptive"),
+            ("Retrieval", "Progressive"),
+        ]
+        status = "  ·  ".join(f"{k}: {v}" for k, v in parts)
+        self.query_one("#brain-status", Static).update(
+            Text(f"● {status}", style=color)
+        )
+
+    def _refresh_log(self) -> None:
+        log = "\n".join(self._app.log_lines[-8:]) or \
+            "Ready. Ask the brain, or press R to replay the demo."
+        self.query_one("#brain-log", Static).update(log)
+
+    def refresh_brain(self) -> None:
+        self._refresh_status()
+        self._refresh_log()
 
 
 class ModelsPane(Static):
@@ -549,7 +579,12 @@ class MemoryBrainApp(App):
     #statusline { height: 1; padding: 0 1; }
     #nav { height: 1fr; }
     #content { height: 1fr; padding: 1 2; }
-    #brain-pane, #models-pane, #retrieval-pane, #perf-pane,
+    #brain-pane { height: 1fr; }
+    #brain-status { height: 1; padding: 0 0 1 0; }
+    #brain-log { height: 1fr; border: round $primary; padding: 0 1;
+                 overflow-y: auto; }
+    #question-input { height: 3; margin: 1 0 0 0; }
+    #models-pane, #retrieval-pane, #perf-pane,
     #connections-pane { padding: 1 0; }
     """
     TITLE = "ContextMemory"
@@ -578,7 +613,6 @@ class MemoryBrainApp(App):
         self.log_lines: list[str] = []
         self.last_answer = ("", "", 0, 0.0, "")
         self.bench_rows: list[tuple] = []
-        self.brain = BrainPane(self)
         self._scenario: list[DemoStep] = demo.build_scenario()
 
     def compose(self) -> ComposeResult:
@@ -627,7 +661,6 @@ class MemoryBrainApp(App):
         self.push_screen(MemoryOnlineScreen(self.config), self._finish_boot)
 
     def _finish_boot(self, _: None | str | object = None) -> None:
-        self.brain = BrainPane(self)
         self._log("Ready. Ask the brain, or press R to replay the demo.")
         if not self._offline and not self.live_model:
             self.run_worker(self._auto_connect())
@@ -827,7 +860,8 @@ class MemoryBrainApp(App):
         self.log_lines.append(f"[{time.strftime('%H:%M:%S')}] {line}")
         self.log_lines = self.log_lines[-8:]
         with contextlib.suppress(Exception):
-            self.query_one("#brain-pane", Static).refresh()
+            view = self.query_one(BrainView)
+            view._refresh_log()
 
 
 def run_tui(
