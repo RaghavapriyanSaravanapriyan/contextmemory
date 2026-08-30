@@ -1,7 +1,7 @@
 <div align="center">
 
-# ContextMemory
-
+<img width="1600" height="533" alt="image" src="https://github.com/user-attachments/assets/67ad9bce-94a9-43c3-97d4-f26d3d9231c3" />
+                                                                                                                                
 ### Give your local model a memory that does not lie.
 
 **A fast, temporal memory layer for Ollama, MCP agents, and AI applications.**
