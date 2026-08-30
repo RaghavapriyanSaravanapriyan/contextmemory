@@ -1,13 +1,14 @@
 import * as THREE from "three";
 import type { GraphData, GraphNode, Hit } from "../lib/types";
 
-export interface SignalPulse {
+export interface GoldenSignalPulse {
   edgeId: string;
-  fromPos: THREE.Vector3;
-  toPos: THREE.Vector3;
+  curve: THREE.QuadraticBezierCurve3;
   progress: number;
   speed: number;
-  mesh: THREE.Mesh;
+  headMesh: THREE.Mesh;
+  tailMesh: THREE.Line;
+  light?: THREE.PointLight;
 }
 
 export class BrainGraph {
@@ -22,10 +23,11 @@ export class BrainGraph {
   private edgeLines: Map<string, THREE.Line> = new Map();
   private edgeCurves: Map<string, THREE.QuadraticBezierCurve3> = new Map();
   private nodePositions: Map<string, THREE.Vector3> = new Map();
-  private signalPulses: SignalPulse[] = [];
+  private signalPulses: GoldenSignalPulse[] = [];
 
-  // Particle Atmosphere
+  // Particle Atmosphere & Golden Dust
   private dustParticles!: THREE.Points;
+  private ambientPulseTimer = 0;
 
   // Raycasting & Interaction
   private raycaster = new THREE.Raycaster();
@@ -51,7 +53,7 @@ export class BrainGraph {
 
     // 1. Scene & Renderer setup
     this.scene = new THREE.Scene();
-    this.scene.fog = new THREE.FogExp2(0x030305, 0.0035);
+    this.scene.fog = new THREE.FogExp2(0x020204, 0.003);
 
     this.camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 2000);
     this.camera.position.copy(this.cameraTargetPos);
@@ -60,16 +62,16 @@ export class BrainGraph {
     this.renderer.setSize(width, height);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.2;
+    this.renderer.toneMappingExposure = 1.35;
     this.container.appendChild(this.renderer.domElement);
 
-    // 2. Ambient & Directional Lighting
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    // 2. Ambient & Gold Accent Lighting
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
     this.scene.add(ambientLight);
 
-    const pointLight = new THREE.PointLight(0xffffff, 2, 300);
-    pointLight.position.set(50, 80, 100);
-    this.scene.add(pointLight);
+    const goldPointLight = new THREE.PointLight(0xffd700, 2.5, 400);
+    goldPointLight.position.set(40, 60, 90);
+    this.scene.add(goldPointLight);
 
     // 3. Add Ambient Dust Cloud
     this.createAtmosphere();
@@ -82,22 +84,34 @@ export class BrainGraph {
   }
 
   private createAtmosphere(): void {
-    const particleCount = 600;
+    const particleCount = 750;
     const geometry = new THREE.BufferGeometry();
     const positions = new Float32Array(particleCount * 3);
+    const colors = new Float32Array(particleCount * 3);
+
+    const goldColor = new THREE.Color(0xffd700);
+    const whiteColor = new THREE.Color(0xffffff);
 
     for (let i = 0; i < particleCount * 3; i += 3) {
-      positions[i] = (Math.random() - 0.5) * 400;
-      positions[i + 1] = (Math.random() - 0.5) * 400;
-      positions[i + 2] = (Math.random() - 0.5) * 400;
+      positions[i] = (Math.random() - 0.5) * 450;
+      positions[i + 1] = (Math.random() - 0.5) * 450;
+      positions[i + 2] = (Math.random() - 0.5) * 450;
+
+      const isGold = Math.random() > 0.6;
+      const c = isGold ? goldColor : whiteColor;
+      colors[i] = c.r;
+      colors[i + 1] = c.g;
+      colors[i + 2] = c.b;
     }
 
     geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+
     const material = new THREE.PointsMaterial({
-      color: 0xffffff,
-      size: 1.2,
+      size: 1.4,
       transparent: true,
-      opacity: 0.25,
+      opacity: 0.35,
+      vertexColors: true,
       blending: THREE.AdditiveBlending,
     });
 
@@ -112,7 +126,6 @@ export class BrainGraph {
   }
 
   private computePositions(nodes: GraphNode[]): void {
-    // 3D Organic Spiral Constellation Layout
     const count = nodes.length;
     const radius = Math.max(40, count * 7);
 
@@ -132,14 +145,13 @@ export class BrainGraph {
   }
 
   private renderGraph(data: GraphData): void {
-    // Clear old meshes
     this.nodeMeshes.forEach((mesh) => this.scene.remove(mesh));
     this.nodeMeshes.clear();
     this.edgeLines.forEach((line) => this.scene.remove(line));
     this.edgeLines.clear();
     this.edgeCurves.clear();
 
-    // 1. Render Nodes
+    // Render Nodes
     data.nodes.forEach((node) => {
       const pos = this.nodePositions.get(node.id) || new THREE.Vector3();
       const nodeGroup = this.createNodeGroup(node);
@@ -148,31 +160,30 @@ export class BrainGraph {
       this.nodeMeshes.set(node.id, nodeGroup);
     });
 
-    // 2. Render Edges
+    // Render Curved Edges
     data.edges.forEach((edge) => {
       const fromPos = this.nodePositions.get(edge.from);
       const toPos = this.nodePositions.get(edge.to);
       if (fromPos && toPos) {
-        // Curve edge with subtle midpoint bend
         const midPoint = new THREE.Vector3()
           .addVectors(fromPos, toPos)
           .multiplyScalar(0.5);
         midPoint.add(
           new THREE.Vector3(
-            (Math.random() - 0.5) * 10,
-            (Math.random() - 0.5) * 10,
-            (Math.random() - 0.5) * 10
+            (Math.random() - 0.5) * 12,
+            (Math.random() - 0.5) * 12,
+            (Math.random() - 0.5) * 12
           )
         );
 
         const curve = new THREE.QuadraticBezierCurve3(fromPos, midPoint, toPos);
-        const points = curve.getPoints(24);
+        const points = curve.getPoints(32);
         const geometry = new THREE.BufferGeometry().setFromPoints(points);
 
         const material = new THREE.LineBasicMaterial({
-          color: 0xffffff,
+          color: 0x444444,
           transparent: true,
-          opacity: edge.derived ? 0.08 : 0.2,
+          opacity: edge.derived ? 0.12 : 0.25,
           linewidth: 1,
         });
 
@@ -186,38 +197,36 @@ export class BrainGraph {
 
   private createNodeGroup(node: GraphNode): THREE.Group {
     const group = new THREE.Group();
+    const radius = 2.5 + (node.salience || 0.5) * 3.5;
 
-    // Size based on salience
-    const radius = 2.5 + (node.salience || 0.5) * 3;
-
-    // Node Sphere Core
+    // Golden Core Sphere
     const coreGeo = new THREE.SphereGeometry(radius, 24, 24);
     const coreMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      roughness: 0.2,
-      metalness: 0.8,
-      emissive: 0x222222,
+      roughness: 0.15,
+      metalness: 0.85,
+      emissive: 0x111115,
     });
     const coreMesh = new THREE.Mesh(coreGeo, coreMat);
     coreMesh.userData = { nodeId: node.id };
     group.add(coreMesh);
 
-    // Glowing Halo Ring
+    // Subtle Outer Ring
     const ringGeo = new THREE.RingGeometry(radius * 1.3, radius * 1.6, 32);
     const ringMat = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
+      color: 0xffd700,
       side: THREE.DoubleSide,
       transparent: true,
-      opacity: 0.3,
+      opacity: 0.25,
       blending: THREE.AdditiveBlending,
     });
     const ringMesh = new THREE.Mesh(ringGeo, ringMat);
     ringMesh.rotation.x = Math.PI / 4;
     group.add(ringMesh);
 
-    // Text Label Canvas Sprite
+    // Text Label Sprite
     const labelSprite = this.createTextSprite(node.subject || node.kind);
-    labelSprite.position.set(0, radius + 3.5, 0);
+    labelSprite.position.set(0, radius + 3.8, 0);
     group.add(labelSprite);
 
     return group;
@@ -230,10 +239,10 @@ export class BrainGraph {
     const ctx = canvas.getContext("2d");
     if (ctx) {
       ctx.font = "bold 24px -apple-system, BlinkMacSystemFont, sans-serif";
-      ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+      ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
       ctx.textAlign = "center";
-      ctx.shadowColor = "rgba(0, 0, 0, 0.8)";
-      ctx.shadowBlur = 8;
+      ctx.shadowColor = "rgba(255, 215, 0, 0.6)";
+      ctx.shadowBlur = 10;
       ctx.fillText(text, 128, 40);
     }
     const texture = new THREE.CanvasTexture(canvas);
@@ -247,36 +256,61 @@ export class BrainGraph {
     return sprite;
   }
 
-  /** Trigger Real-Time Synaptic Energy Pulse Animation across query hits */
+  /** Spawn rapid golden electrical stroke pulse along a bezier curve */
+  private spawnGoldenStroke(edgeId: string, curve: THREE.QuadraticBezierCurve3, fast = true): void {
+    // 1. Glowing Gold Head Sphere
+    const headGeo = new THREE.SphereGeometry(1.8, 16, 16);
+    const headMat = new THREE.MeshBasicMaterial({
+      color: 0xfff0aa,
+      transparent: true,
+      opacity: 0.95,
+      blending: THREE.AdditiveBlending,
+    });
+    const headMesh = new THREE.Mesh(headGeo, headMat);
+
+    // 2. Rapid Golden Stroke Tail Line
+    const tailPoints = [curve.getPoint(0), curve.getPoint(0.05)];
+    const tailGeo = new THREE.BufferGeometry().setFromPoints(tailPoints);
+    const tailMat = new THREE.LineBasicMaterial({
+      color: 0xffd700,
+      transparent: true,
+      opacity: 0.9,
+      linewidth: 3,
+      blending: THREE.AdditiveBlending,
+    });
+    const tailMesh = new THREE.Line(tailGeo, tailMat);
+
+    // 3. Dynamic Golden PointLight
+    const strokeLight = new THREE.PointLight(0xffd700, 2.0, 35);
+
+    this.scene.add(headMesh);
+    this.scene.add(tailMesh);
+    this.scene.add(strokeLight);
+
+    this.signalPulses.push({
+      edgeId,
+      curve,
+      progress: 0,
+      speed: fast ? 0.045 + Math.random() * 0.025 : 0.025,
+      headMesh,
+      tailMesh,
+      light: strokeLight,
+    });
+  }
+
+  /** Trigger Real-Time Synaptic Golden Stroke Flow across evidence nodes */
   public triggerSynapticFlow(evidence: Hit[]): void {
     if (!evidence || evidence.length === 0) return;
 
-    // Spawn pulses along connected edges of evidence nodes
     evidence.forEach((hit) => {
       this.currentData?.edges.forEach((edge) => {
         if (edge.from === hit.id || edge.to === hit.id) {
-          const fromPos = this.nodePositions.get(edge.from);
-          const toPos = this.nodePositions.get(edge.to);
-          if (fromPos && toPos) {
-            // Pulse mesh
-            const pulseGeo = new THREE.SphereGeometry(1.5, 16, 16);
-            const pulseMat = new THREE.MeshBasicMaterial({
-              color: 0xffffff,
-              transparent: true,
-              opacity: 0.9,
-              blending: THREE.AdditiveBlending,
-            });
-            const pulseMesh = new THREE.Mesh(pulseGeo, pulseMat);
-            this.scene.add(pulseMesh);
-
-            this.signalPulses.push({
-              edgeId: edge.id,
-              fromPos: fromPos.clone(),
-              toPos: toPos.clone(),
-              progress: 0,
-              speed: 0.015 + Math.random() * 0.01,
-              mesh: pulseMesh,
-            });
+          const curve = this.edgeCurves.get(edge.id);
+          if (curve) {
+            // Launch 3 rapid golden strokes with slight staggering
+            this.spawnGoldenStroke(edge.id, curve, true);
+            setTimeout(() => this.spawnGoldenStroke(edge.id, curve, true), 80);
+            setTimeout(() => this.spawnGoldenStroke(edge.id, curve, true), 160);
           }
         }
       });
@@ -301,23 +335,44 @@ export class BrainGraph {
 
     // Rotate ambient dust cloud slowly
     if (this.dustParticles) {
-      this.dustParticles.rotation.y += 0.0003;
-      this.dustParticles.rotation.x += 0.0001;
+      this.dustParticles.rotation.y += 0.0004;
+      this.dustParticles.rotation.x += 0.0002;
     }
 
-    // Update signal pulses
+    // Continuous real-time ambient micro-pulses
+    this.ambientPulseTimer++;
+    if (this.ambientPulseTimer > 45 && this.edgeCurves.size > 0) {
+      this.ambientPulseTimer = 0;
+      const keys = Array.from(this.edgeCurves.keys());
+      const randomKey = keys[Math.floor(Math.random() * keys.length)];
+      const curve = this.edgeCurves.get(randomKey);
+      if (curve) {
+        this.spawnGoldenStroke(randomKey, curve, false);
+      }
+    }
+
+    // Update real-time golden stroke pulses along bezier curves
     for (let i = this.signalPulses.length - 1; i >= 0; i--) {
       const pulse = this.signalPulses[i];
       pulse.progress += pulse.speed;
+
       if (pulse.progress >= 1) {
-        this.scene.remove(pulse.mesh);
+        this.scene.remove(pulse.headMesh);
+        this.scene.remove(pulse.tailMesh);
+        if (pulse.light) this.scene.remove(pulse.light);
         this.signalPulses.splice(i, 1);
       } else {
-        pulse.mesh.position.lerpVectors(
-          pulse.fromPos,
-          pulse.toPos,
-          pulse.progress
-        );
+        const headPos = pulse.curve.getPoint(pulse.progress);
+        const tailProgress = Math.max(0, pulse.progress - 0.15);
+        const tailPos = pulse.curve.getPoint(tailProgress);
+
+        pulse.headMesh.position.copy(headPos);
+        if (pulse.light) pulse.light.position.copy(headPos);
+
+        // Update stroke trail line geometry
+        const trailPoints = [tailPos, headPos];
+        pulse.tailMesh.geometry.dispose();
+        pulse.tailMesh.geometry = new THREE.BufferGeometry().setFromPoints(trailPoints);
       }
     }
 
@@ -351,7 +406,6 @@ export class BrainGraph {
         this.previousMousePosition = { x: e.clientX, y: e.clientY };
       }
 
-      // Raycast hover check
       this.checkHover();
     });
 
