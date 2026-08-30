@@ -243,6 +243,7 @@ def _launch_web_observatory() -> None:
     import subprocess
     import webbrowser
     import socket
+    import time
     from contextmemory.server.app import start_server
 
     def is_port_open(port: int) -> bool:
@@ -257,6 +258,8 @@ def _launch_web_observatory() -> None:
         except Exception:
             pass
 
+    print("  [Observatory Server] Real-time telemetry backend online at http://127.0.0.1:8765")
+
     # Start Vite dev server on port 5173
     if not is_port_open(5173):
         web_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
@@ -267,6 +270,9 @@ def _launch_web_observatory() -> None:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            time.sleep(0.3)
+
+    print("  [Observatory Web UI] Launching live 3D memory brain at http://localhost:5173\n")
 
     try:
         webbrowser.open("http://localhost:5173")
