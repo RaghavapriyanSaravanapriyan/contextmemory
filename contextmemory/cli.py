@@ -238,17 +238,26 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
 
 
 def _launch_web_observatory() -> None:
-    """Launch the Web UI Observatory automatically in default browser."""
+    """Launch the Web UI Observatory automatically in default browser with real-time backend API."""
     import os
     import subprocess
     import webbrowser
     import socket
+    from contextmemory.server.app import start_server
 
     def is_port_open(port: int) -> bool:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(0.5)
             return s.connect_ex(("127.0.0.1", port)) == 0
 
+    # Start real-time HTTP server on port 8765
+    if not is_port_open(8765):
+        try:
+            start_server(8765)
+        except Exception:
+            pass
+
+    # Start Vite dev server on port 5173
     if not is_port_open(5173):
         web_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
         if os.path.isdir(web_dir):

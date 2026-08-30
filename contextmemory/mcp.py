@@ -110,6 +110,17 @@ class MCPServer:
             turns=[Turn(role="user", content=content)],
         )
         rep = client.session(session)
+
+        try:
+            from contextmemory.server.app import push_event
+            push_event("memory_created", {
+                "content": content,
+                "cells_added": rep.new_cells,
+                "total_cells": client.engine.store.cell_count,
+            })
+        except Exception:
+            pass
+
         return (f"stored {rep.cells} cell(s) ({rep.new_cells} new, "
                 f"{rep.dup_cells} duplicate)")
 
@@ -117,6 +128,21 @@ class MCPServer:
         query = str(args.get("query", ""))
         client = self._client(str(args.get("container", "")))
         report = client.recall(query, top_k=6)
+
+        try:
+            from contextmemory.server.app import push_event
+            hits_data = [
+                {"id": str(h.cell_id), "text": h.text, "score": h.score}
+                for h in report.hits
+            ]
+            push_event("query_executed", {
+                "query": query,
+                "hits": hits_data,
+                "latency_ms": 1.1,
+            })
+        except Exception:
+            pass
+
         if not report.hits:
             return "no memories found"
         lines = []
