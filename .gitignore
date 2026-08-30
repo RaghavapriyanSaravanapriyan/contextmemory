@@ -9,3 +9,9 @@ build/
 
 # downloaded benchmark datasets (fetched locally, not committed)
 benchmarks/data/*.json
+
+# Node & web dependencies
+node_modules/
+web/node_modules/
+web/dist/
+*.tsbuildinfo

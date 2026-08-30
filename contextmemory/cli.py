@@ -237,6 +237,34 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     return 0
 
 
+def _launch_web_observatory() -> None:
+    """Launch the Web UI Observatory automatically in default browser."""
+    import os
+    import subprocess
+    import webbrowser
+    import socket
+
+    def is_port_open(port: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            return s.connect_ex(("127.0.0.1", port)) == 0
+
+    if not is_port_open(5173):
+        web_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
+        if os.path.isdir(web_dir):
+            subprocess.Popen(
+                ["npx", "vite", "--port", "5173"],
+                cwd=web_dir,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+    try:
+        webbrowser.open("http://localhost:5173")
+    except Exception:
+        pass
+
+
 def _cmd_mcp(args: argparse.Namespace) -> int:
     from contextmemory.mcp import main as mcp_main
 
@@ -275,8 +303,9 @@ def _cmd_chat(args: argparse.Namespace) -> int:
         "claim to remember anything unless the tool returned it. Answer "
         "directly and briefly."
     )
+    _launch_web_observatory()
     messages: list[dict] = [{"role": "system", "content": system}]
-    print(f"ContextMemory chat | Ollama: {model} | MCP: connected")
+    print(f"ContextMemory chat | Ollama: {model} | MCP: connected | Observatory: http://localhost:5173")
     print("Type /exit to quit.\n")
     try:
         while True:
