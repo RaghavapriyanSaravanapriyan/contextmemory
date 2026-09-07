@@ -92,7 +92,10 @@ def load_longmemeval(path: str | Path) -> list[QuestionInstance]:
                 question_id=item["question_id"],
                 question_type=item["question_type"],
                 question=item["question"],
-                answer=item["answer"],
+                # Official data is not always string-typed (bare numbers
+                # appear as temporal answers); normalize at the boundary.
+                answer=item["answer"] if isinstance(item["answer"], str)
+                else str(item["answer"]),
                 question_date=parse_longmemeval_date(item["question_date"]),
                 sessions=sessions,
                 answer_session_ids=item.get("answer_session_ids", []),

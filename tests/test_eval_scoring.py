@@ -56,6 +56,13 @@ def test_deterministic_match_content_words() -> None:
     )
 
 
+def test_deterministic_match_tolerates_non_string_answers() -> None:
+    # Official LongMemEval data uses bare numbers for some temporal
+    # answers (e.g. a year); scoring must coerce, never crash.
+    assert deterministic_match("in 2022", 2022)
+    assert not deterministic_match("in 2023", 2022)
+
+
 def test_score_deterministic_aggregation() -> None:
     results = [
         _result("single-session-user", "A", "A"),

@@ -84,6 +84,42 @@ class RecencyWindowSystem(MemorySystem):
         )
 
 
+class RecencyCharsSystem(MemorySystem):
+    """Keeps only the most recent ``max_chars`` of transcript.
+
+    The long-scale baseline: a 100K-token conversation cannot fit a small
+    local reader, so the honest local analogue of "recent context" is a
+    trailing character window. Same reader model as every other system.
+    """
+
+    def __init__(self, reader: ReaderClient, max_chars: int = 8000) -> None:
+        self._reader = reader
+        self._max_chars = max_chars
+        self._chunks: list[str] = []
+
+    def ingest(self, session: Session) -> None:
+        text = "\n".join(f"{t.role}: {t.content}" for t in session.turns)
+        self._chunks.append(text)
+
+    def answer(self, question: str, question_date: datetime) -> str:
+        buf: list[str] = []
+        total = 0
+        for chunk in reversed(self._chunks):
+            buf.append(chunk)
+            total += len(chunk)
+            if total >= self._max_chars:
+                break
+        history = "\n".join(reversed(buf))[-self._max_chars :]
+        prompt = (
+            "Answer using only the transcript below. If it lacks the "
+            f"information, say so.\n\n<transcript>\n{history}\n</transcript>\n\n"
+            f"Question: {question}"
+        )
+        return self._reader.complete(
+            [{"role": "user", "content": prompt}], temperature=0.0
+        )
+
+
 class CoreMemorySystem(MemorySystem):
     """The production memory layer as an eval harness system.
 
