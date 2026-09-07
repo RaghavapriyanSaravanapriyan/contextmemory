@@ -9,7 +9,7 @@
 <br />
 
 ![Python](https://img.shields.io/badge/python-3.11%2B-8b9cff?style=flat-square)
-![C++](https://img.shields.io/badge/core-C%2B%2B-65e6b0?style=flat-square)
+![C++](https://img.shields.io/badge/core-C%2B%2B20-65e6b0?style=flat-square)
 ![Ollama](https://img.shields.io/badge/ollama-local-ffb86b?style=flat-square)
 ![MCP](https://img.shields.io/badge/MCP-ready-c9a7ff?style=flat-square)
 
@@ -23,250 +23,184 @@
 
 ---
 
-## The Short Version
+## Install
 
-AI assistants forget between conversations. ContextMemory gives them somewhere
-to keep the useful parts: who you are, what changed, what matters, and what is
-still true.
-
-It is local-first and deliberately unglamorous about your data. No cloud
-memory service. No mystery database. No giant context dump. A C++ temporal
-memory engine, a Python front desk, an Ollama chat, an MCP bridge, and a TUI
-that lets you watch the brain work.
-
-## Start Talking To A Model With Memory
+Requirements: Python 3.11+, a C++ compiler, CMake, Ninja. Ollama is
+optional (needed only for live-model answers; memory itself works offline).
 
 ```bash
+git clone https://github.com/RaghavapriyanSaravanapriyan/contextmemory.git
+cd contextmemory
 uv sync
-ollama pull qwen3:4b
-uv run contextmemory chat --model qwen3:4b
+uv run contextmemory setup
 ```
 
-That is the whole loop. ContextMemory will connect to Ollama, start it if
-needed, wire the MCP tools into the model, and keep the memory journal on disk.
+`setup` is an interactive wizard: what you're building → provider
+(Ollama local / offline) → model (auto-detected from `ollama serve`) →
+memory container. Re-run anytime; existing values become defaults.
+`contextmemory setup --show` prints the current config.
 
-```text
-ContextMemory chat | Ollama: qwen3:4b | MCP: connected
-
-you> I live in Seattle and prefer Vim.
-ollama> I will remember that.
-
-you> Where do I live?
-ollama> You live in Seattle.
-```
-
-Restart the command. Ask again. The fact is still there.
+Verify the install:
 
 ```bash
-uv run contextmemory chat
+./scripts/verify.sh   # pytest + ruff (C++ suite: see below)
 ```
 
-Omit `--model` to use the first model installed in Ollama. Type `/exit` to
-leave. This is a normal terminal chat, not a special UI. Ollama is the voice;
-ContextMemory is the memory behind the voice.
+## Use it in 60 seconds
 
-## Give Any Agent The Same Brain
+```bash
+# Watch the brain work (offline scripted demo, no model needed)
+uv run contextmemory demo
 
-ContextMemory speaks MCP over stdio. Add this server to OpenCode, Claude Code,
-Cursor, Cline, or any other MCP client:
+# Talk with memory (Ollama voice, ContextMemory brain)
+uv run contextmemory chat --model qwen3:4b
+
+# Shell-level memory: store, retrieve, profile — no model involved
+uv run contextmemory ingest --turn 'user:I moved to Seattle.'
+uv run contextmemory recall 'Where do I live?' --json
+uv run contextmemory profile
+```
+
+```python
+from contextmemory.api import MemoryClient
+
+brain = MemoryClient("user_123")          # persistent journal, auto-loaded
+brain.session(session)                    # ingest a conversation
+report = brain.recall("Where do I live?") # ranked hits + evidence pack
+answer, report = brain.ask("Where do I live?", reader)
+profile = brain.profile()                 # static (durable) + dynamic (recent)
+```
+
+Memory is scoped by **container**: a user, project, repo, or agent.
+Pass `--container` (CLI/MCP/HTTP) or the tag (API). Switch containers in
+the TUI with `C`.
+
+## Surfaces
+
+| Surface | Entry point | Tools / endpoints |
+| --- | --- | --- |
+| TUI HQ | `contextmemory` / `demo` | Brain, Timeline, Why, Models, Retrieval Live, Performance, Connections, Health, **Profile, Setup, Help** |
+| CLI | `contextmemory <cmd>` | `chat demo ask ingest recall profile setup mcp eval dims bench` |
+| MCP (stdio) | `contextmemory mcp --container brain` | `memory recall context profile timeline forget` |
+| HTTP | `:8765` (observatory + API) | `GET health graph metrics events profile` · `POST ask recall memories forget` |
+| Python | `contextmemory.api.MemoryClient` | `add session search recall ask profile projection save load` |
+
+MCP client config (OpenCode, Claude Code, Cursor, Cline — any MCP client):
 
 ```json
 {
   "mcpServers": {
     "contextmemory": {
       "command": "uv",
-      "args": [
-        "run",
-        "--project",
-        "/absolute/path/to/contextmemory",
-        "contextmemory",
-        "mcp",
-        "--container",
-        "brain"
-      ]
+      "args": ["run", "--project", "/absolute/path/to/contextmemory",
+               "contextmemory", "mcp", "--container", "brain"]
     }
   }
 }
 ```
 
-Or run the bridge directly:
-
-```bash
-contextmemory mcp --container brain
-```
-
-The brain exposes four small tools:
-
-| Tool | Job |
-| --- | --- |
-| `memory(content)` | Keep a meaningful fact or conversation detail |
-| `recall(query)` | Find memories relevant to a question |
-| `context(topic)` | Return compact working context |
-| `forget(id)` | Remove a memory when it should not survive |
-
-MCP clients decide when to call tools. The built-in `contextmemory chat` host
-does the wiring for you and also supports native Ollama tool calls.
-
-## The Demo That Makes It Click
-
-```bash
-uv run contextmemory demo
-```
-
-Choose **Run Offline Demo**. In under a minute, the brain walks through a small
-story:
-
-```text
-New York  ------ moved ------>  Seattle
-Acme      ------ joined ----->  Globex
-
-current truth       Seattle / Globex
-historical truth    New York / Acme
-unknown question    I don't have enough information
-```
-
-The dashboard turns that story into something you can see: Brain, Timeline,
-Why, Models, Retrieval Live, Performance, Connections, and Health. Press `O`
-to select a local Ollama model. Press `R` to replay the story.
-
-For the live version:
-
-```bash
-uv run contextmemory demo --live --model qwen3:4b
-```
-
-Or use the repository launcher:
-
-```bash
-./run.sh
-./run.sh --live --model qwen3:4b
-```
-
-## What Makes It Different
-
-| Ordinary chat memory | ContextMemory |
-| --- | --- |
-| Keeps getting longer | Retrieves only what matters |
-| Treats old and new facts alike | Tracks validity over time |
-| Guesses when context is thin | Abstains when evidence is missing |
-| Hides the retrieval path | Shows provenance, routing, and timing |
-| Depends on a hosted service | Runs locally beside your model |
-
-The important question is not “how much did we store?”
-
-It is:
-
-> Did we retrieve the right thing, at the right time, for the right reason?
-
-## How The Brain Works
+## How the brain works
 
 ```text
 conversation / tool trace
           |
-       CAPTURE       immutable episode, cheap and lossless
+       CAPTURE      immutable episode, cheap and lossless (no LLM)
           |
-       EXTRACT      optional single-pass LLM distillation
+       EXTRACT      one LLM call per session → compact cells
+                    (offline fallback: deterministic, model-free)
           |
-      RECONCILE     deduplicate, version, and project truth
+      RECONCILE     dedup → version → project truth (C++, deterministic)
           |
-        RECALL      bounded temporal query plan
+        RECALL      bounded temporal query plan, no LLM
           |
-         PACK       minimum-sufficient evidence under a budget
+         PACK       minimum-sufficient evidence under a token budget
           |
-       ANSWER       Ollama, a frontier model, or your own reader
+        ANSWER      Ollama, a frontier model, or your own reader —
+                    or an honest "I don't have enough information"
 ```
 
-Three layers, three jobs:
+**Three layers, three jobs:**
 
-- **C++ ETMC core** handles capture, temporal validity, reconciliation,
-  projections, search, and evidence packing.
-- **Python layer** handles orchestration, Ollama, the public API, MCP, the TUI,
-  and integrations.
-- **Evaluation rig** measures write precision, evolution, forgetting, accuracy,
-  and latency instead of waving at a leaderboard.
+- **C++ ETMC core** (`core/`, zero third-party deps): episodes, bi-temporal
+  cells (`observed_at` × `valid_from/until`), state projections, hybrid
+  retrieval (BM25 + dense + entity + projection channels fused with RRF),
+  evidence packing, atomic journal persistence.
+- **Python layer** (`contextmemory/`): orchestration, extraction, Ollama,
+  public API, MCP, HTTP, TUI, evaluation. It never reimplements retrieval.
+- **Evaluation rig** (`contextmemory/eval/`, `benchmarks/`): LongMemEval
+  replay, custom dimensions (write precision, evolution, forgetting),
+  deterministic latency bench.
 
-Episodes are immutable. Cells carry validity windows. When “I live in New York”
-becomes “I moved to Seattle,” both truths remain available, but only Seattle is
-current. When the memory has no answer, the honest answer wins.
+**The temporal model.** "I live in New York" → "I moved to Seattle" keeps
+both truths: Seattle is current, New York is history. Late-arriving older
+events link as history but never rewind current truth. Forgotten cells
+leave the read path but stay auditable. Empty evidence abstains instead
+of fabricating.
 
-## CLI Surface
+**Why it's fast.** The read path calls no model and is fully bounded:
+a compiled query plan caps candidates, channels run over a narrowed
+region, and the packer stops at the token budget. Measured on this rig:
+ingest p50 ~0.05 ms, answer p50 ~0.17 ms (deterministic path, no model;
+`contextmemory bench`). LLM extraction is one completion per session by
+design and is reported separately from retrieval latency.
 
-```bash
-# The normal terminal experience
-contextmemory chat --model qwen3:4b
+**Why it survives.** Journals commit atomically (tmp + rename), load
+transactionally (corruption never destroys live state), checksums cover
+record types, old journal formats still load, enums and vector dims are
+validated, version-chain walks are cycle-guarded, ranking is fully
+deterministic (score ↓, id ↑), and the store is thread-safe. The C++
+suite (15 tests, 65 checks) is ASan/UBSan clean.
 
-# The visual brain
-contextmemory demo
-contextmemory demo --live --model qwen3:4b
+## Benchmarks (honest numbers only)
 
-# An MCP server for external agents
-contextmemory mcp --container brain
+Frontier instruments: **LoCoMo** (near-saturated regression test),
+**LongMemEval** (the discriminative conversational bar),
+**BEAM** (10M-token frontier), plus our `dims`/`bench` for the gaps no
+public benchmark covers (write precision, evolution, forgetting,
+deterministic latency). See `docs/research/frontier-memory-benchmarks.md`.
 
-# Direct ingestion
-contextmemory ingest --turn 'user:I moved to Seattle.'
+Measured here (CPU-only rig, deterministic):
 
-# Measure the engine
-contextmemory bench --system contextmemory
-contextmemory dims --system contextmemory \
-  --reader-api-base http://localhost:11434 \
-  --reader-model qwen3:4b
-```
+- `bench`: ingest p50 ~0.05 ms · answer p50 ~0.17 ms
+- `dims` + full-history reader (qwen2.5:1.5b): evolution 0.80 ·
+  forgetting 1.00 · write-precision 0.60
 
-## Python API
+Not claimed: LLM-judged leaderboard scores. Our one-rig harness
+(`benchmarks/run_official.py`: BEAM + LongMemEval + LoCoMo, identical
+reader) is the instrument for head-to-heads — run it before believing
+any comparison, including ours. Published vendor numbers (Supermemory
+#1 LongMemEval/LoCoMo/ConvoMem; Mem0 92.5/94.4/64.1/48.6) are
+self-reported on different harnesses and are not head-to-head with us.
 
-```python
-from datetime import datetime
+## ContextMemory vs the field
 
-from contextmemory.api import MemoryClient
-from contextmemory.eval.protocol import Session, Turn
+| Capability | ContextMemory | Supermemory (self-host) |
+| --- | --- | --- |
+| Local-first setup | `uv sync` + `setup` wizard, 294 KB wheel | single binary + wizard |
+| Offline memory | yes (deterministic, model-free) | via local Ollama |
+| Isolation | container tag | containerTag |
+| Truth over time | validity windows, no-rewind projections | Updates/Extends/Derives |
+| Read latency | sub-ms deterministic path (measured) | ~50 ms profiles (self-report) |
+| MCP / HTTP / CLI / SDK / TUI | 6 tools · 9 endpoints · 11 commands · SDK · HQ | MCP + plugins · full API · dashboard |
+| Deps to operate | 2 Python pkgs, no vector DB | embedded engine, zero-config |
+| Connectors / RAG / files | out of scope (memory ≠ RAG) | Drive/Gmail/Notion/GitHub, SuperRAG |
 
-brain = MemoryClient("user_123")
+Pick ContextMemory when you want a dependency-free, auditable,
+crash-safe memory core beside your own model and stack. Pick a platform
+when you want hosted connectors and file pipelines today.
 
-brain.session(Session(
-    session_id="conversation-1",
-    timestamp=datetime.now(),
-    turns=[Turn(role="user", content="I moved to Seattle.")],
-))
-
-report = brain.recall("Where do I live?")
-for hit in report.hits:
-    print(hit.text)
-```
-
-Memory is scoped by container. The default is `brain`; use a different
-`--container` for a user, repository, project, or agent.
-
-## Install And Develop
-
-Requirements: Python 3.11+, a C++ compiler, CMake, Ninja, and Ollama for live
-model use.
-
-```bash
-uv sync
-./scripts/verify.sh
-```
-
-The verification command runs the C++ checks, Python tests, and lint. The
-deterministic suite does not need a model or network.
-
-## Repository Map
+## Repository map
 
 ```text
-core/                 C++ ETMC memory engine
-contextmemory/        Python API, Ollama, MCP, TUI, and evaluation
-tests/                automated validation
-benchmarks/           benchmark data and workloads
-docs/                 architecture and research notes
-reports/              historical runs and investigations
+core/                 C++ ETMC engine + dependency-free tests
+contextmemory/        API, engine, eval, MCP, HTTP, TUI, CLI, setup
+tests/                100 automated tests (isolated from real journals)
+benchmarks/           official-protocol runs + data (data excluded from sdist)
+docs/architecture/    current design (production-hardening.md is newest)
+docs/research/        durable synthesis (frontier-memory-benchmarks.md)
+reports/runs/         dated run evidence (2026-09-07-hardening-and-surface.md)
 scripts/verify.sh     one-command verification
 ```
-
-## The Point
-
-More context is not the same thing as more memory.
-
-Good memory is selective. It remembers what matters, notices when reality
-changes, and knows when to stay quiet.
 
 ## License
 
