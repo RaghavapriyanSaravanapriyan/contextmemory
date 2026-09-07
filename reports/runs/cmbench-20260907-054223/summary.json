@@ -1,0 +1,37 @@
+{
+ "model": "qwen3:4b",
+ "base_url": "http://localhost:11434",
+ "systems": "contextmemory,full-history",
+ "suites": [
+  "bench:contextmemory",
+  "bench:full-history"
+ ],
+ "skipped_suites": [
+  "dims"
+ ],
+ "started_utc": "2026-09-07 05:42 UTC",
+ "judge": "deterministic-only (no LLM judge)",
+ "third_party": [
+  {
+   "system": "supermemory",
+   "status": "skipped",
+   "detail": "no key (export SUPERMEMORY_API_KEY=... (get one at supermemory.ai))"
+  }
+ ],
+ "results": {
+  "bench:contextmemory": {
+   "exit": 0,
+   "seconds": 0.6,
+   "summary": "ingest  p50    0.079 ms  p95    0.128 ms  mean    0.085 ms  (n=200) | answer  p50    0.129 ms  p95    0.378 ms  mean    0.180 ms  (n=4)",
+   "timed_out": false,
+   "log": "D:\\VIT_MAIN\\PROJECTS\\DJ\\contextmemory\\reports\\runs\\cmbench-20260907-054223\\bench-contextmemory.log"
+  },
+  "bench:full-history": {
+   "exit": 0,
+   "seconds": 0.4,
+   "summary": "ingest  p50    0.000 ms  p95    0.000 ms  mean    0.000 ms  (n=200) | answer  p50    0.151 ms  p95    0.195 ms  mean    0.160 ms  (n=4)",
+   "timed_out": false,
+   "log": "D:\\VIT_MAIN\\PROJECTS\\DJ\\contextmemory\\reports\\runs\\cmbench-20260907-054223\\bench-full-history.log"
+  }
+ }
+}

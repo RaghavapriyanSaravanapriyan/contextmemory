@@ -1,0 +1,84 @@
+Traceback (most recent call last):
+  File "C:\Users\Visshal Balaji\AppData\Local\Programs\Python\Python311\Lib\site-packages\httpx\_transports\default.py", line 69, in map_httpcore_exceptions
+    yield
+  File "C:\Users\Visshal Balaji\AppData\Local\Programs\Python\Python311\Lib\site-packages\httpx\_transports\default.py", line 233, in handle_request
+    resp = self._pool.handle_request(req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Visshal Balaji\AppData\Local\Programs\Python\Python311\Lib\site-packages\httpcore\_sync\connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "C:\Users\Visshal Balaji\AppData\Local\Programs\Python\Python311\Lib\site-packages\httpcore\_sync\connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Visshal Balaji\AppData\Local\Programs\Python\Python311\Lib\site-packages\httpcore\_sync\connection.py", line 101, in handle_request
+    raise exc
+  File "C:\Users\Visshal Balaji\AppData\Local\Programs\Python\Python311\Lib\site-packages\httpcore\_sync\connection.py", line 78, in handle_request
+    stream = self._connect(request)
+             ^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Visshal Balaji\AppData\Local\Programs\Python\Python311\Lib\site-packages\httpcore\_sync\connection.py", line 124, in _connect
+    stream = self._network_backend.connect_tcp(**kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Visshal Balaji\AppData\Local\Programs\Python\Python311\Lib\site-packages\httpcore\_backends\sync.py", line 207, in connect_tcp
+    with map_exceptions(exc_map):
+  File "C:\Users\Visshal Balaji\AppData\Local\Programs\Python\Python311\Lib\contextlib.py", line 155, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "C:\Users\Visshal Balaji\AppData\Local\Programs\Python\Python311\Lib\site-packages\httpcore\_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.ConnectError: [WinError 10061] No connection could be made because the target machine actively refused it
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "D:\VIT_MAIN\PROJECTS\DEVJAM26\contextmemory\contextmemory\cli.py", line 456, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "D:\VIT_MAIN\PROJECTS\DEVJAM26\contextmemory\contextmemory\cli.py", line 452, in main
+    return args.func(args)
+           ^^^^^^^^^^^^^^^
+  File "D:\VIT_MAIN\PROJECTS\DEVJAM26\contextmemory\contextmemory\cli.py", line 159, in _cmd_dims
+    reports = run_dimensions(default_scenarios(), factory)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\VIT_MAIN\PROJECTS\DEVJAM26\contextmemory\contextmemory\eval\dimensions.py", line 394, in run_dimensions
+    results = [run_scenario(s, system_factory) for s in scenarios]
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\VIT_MAIN\PROJECTS\DEVJAM26\contextmemory\contextmemory\eval\dimensions.py", line 394, in <listcomp>
+    results = [run_scenario(s, system_factory) for s in scenarios]
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\VIT_MAIN\PROJECTS\DEVJAM26\contextmemory\contextmemory\eval\dimensions.py", line 368, in run_scenario
+    hypothesis = system.answer(probe.question, probe.question_date)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\VIT_MAIN\PROJECTS\DEVJAM26\contextmemory\contextmemory\eval\systems.py", line 117, in answer
+    answer, _report = self._engine.answer(question, question_date,
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\VIT_MAIN\PROJECTS\DEVJAM26\contextmemory\contextmemory\engine\memory.py", line 272, in answer
+    answer = reader.complete([{"role": "user", "content": prompt}],
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\VIT_MAIN\PROJECTS\DEVJAM26\contextmemory\contextmemory\eval\protocol.py", line 127, in complete
+    resp = self._client.post("/v1/chat/completions", json=payload)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Visshal Balaji\AppData\Local\Programs\Python\Python311\Lib\site-packages\httpx\_client.py", line 1145, in post
+    return self.request(
+           ^^^^^^^^^^^^^
+  File "C:\Users\Visshal Balaji\AppData\Local\Programs\Python\Python311\Lib\site-packages\httpx\_client.py", line 827, in request
+    return self.send(request, auth=auth, follow_redirects=follow_redirects)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Visshal Balaji\AppData\Local\Programs\Python\Python311\Lib\site-packages\httpx\_client.py", line 914, in send
+    response = self._send_handling_auth(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Visshal Balaji\AppData\Local\Programs\Python\Python311\Lib\site-packages\httpx\_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Visshal Balaji\AppData\Local\Programs\Python\Python311\Lib\site-packages\httpx\_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Visshal Balaji\AppData\Local\Programs\Python\Python311\Lib\site-packages\httpx\_client.py", line 1015, in _send_single_request
+    response = transport.handle_request(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Visshal Balaji\AppData\Local\Programs\Python\Python311\Lib\site-packages\httpx\_transports\default.py", line 232, in handle_request
+    with map_httpcore_exceptions():
+  File "C:\Users\Visshal Balaji\AppData\Local\Programs\Python\Python311\Lib\contextlib.py", line 155, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "C:\Users\Visshal Balaji\AppData\Local\Programs\Python\Python311\Lib\site-packages\httpx\_transports\default.py", line 86, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ConnectError: [WinError 10061] No connection could be made because the target machine actively refused it
