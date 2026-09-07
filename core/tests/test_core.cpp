@@ -454,6 +454,148 @@ void test_graph_expansion_cap() {
     CHECK(!res.empty());
 }
 
+void test_hardening_no_rewind_and_bounds() {
+    Store s("harden");
+    const Timestamp t0 = 1'700'000'000'000LL;
+
+    CellInput ny;
+    ny.subject = "user";
+    ny.predicate = "location";
+    ny.object = "New York";
+    ny.text = "User lives in New York";
+    ny.observed_at = t0;
+    ny.valid_from = t0;
+    s.reconcile(ny);
+
+    CellInput sea;
+    sea.subject = "user";
+    sea.predicate = "location";
+    sea.object = "Seattle";
+    sea.text = "User moved to Seattle Washington";
+    sea.observed_at = t0 + day;
+    sea.valid_from = t0 + day;
+    s.reconcile(sea);
+
+    // Late-arriving older event: projection must NOT rewind to New York.
+    CellInput late;
+    late.subject = "user";
+    late.predicate = "location";
+    late.object = "New York";
+    late.text = "User lived in New York before Seattle trip";
+    late.observed_at = t0 + 2 * day;
+    late.valid_from = t0 - day;  // earlier event, arrives late
+    s.reconcile(late);
+
+    const auto* proj = s.projection("user", "location");
+    CHECK(proj != nullptr);
+    const auto* active = s.cell(proj->active_cell);
+    CHECK(active != nullptr);
+    CHECK(active->object == "Seattle");
+
+    // candidate_cap == 0 means "no candidates", never "everything".
+    auto cq = s.compile("Where does the user live?", t0 + 3 * day);
+    cq.plan.candidate_cap = 0;
+    CHECK(s.search(cq.plan, {}).empty());
+
+    // Determinism: identical queries return identical order.
+    auto q2 = s.compile("Where does the user live?", t0 + 3 * day);
+    auto r1 = s.search(q2.plan, {});
+    auto r2 = s.search(q2.plan, {});
+    CHECK(r1.size() == r2.size());
+    CHECK(!r1.empty());
+    for (size_t i = 0; i < r1.size(); ++i) {
+        CHECK(r1[i].cell_id == r2[i].cell_id);
+    }
+
+    // Tiny token budget still returns the single best cell (never silence).
+    q2.plan.token_budget = 1;
+    auto tiny = s.search(q2.plan, {});
+    auto pack = s.pack(tiny, q2.plan);
+    CHECK(!pack.items.empty());
+}
+
+void test_hardening_vector_dims() {
+    Store s("vecdim");
+    const Timestamp t0 = 1'700'000'000'000LL;
+    CellInput a;
+    a.subject = "user";
+    a.predicate = "location";
+    a.text = "User lives in Seattle city";
+    a.observed_at = t0;
+    a.valid_from = t0;
+    const uint64_t id = s.reconcile(a);
+
+    const std::vector<float> v4{1.0f, 0.0f, 0.0f, 0.0f};
+    s.add_embedding(id, v4);
+    // Mismatched dim must be rejected, not stored (heap-OOB guard).
+    const std::vector<float> v8(8, 0.5f);
+    s.add_embedding(id, v8);
+    auto cq = s.compile("Where does the user live in Seattle?", t0 + day);
+    auto res = s.search(cq.plan, v8);  // query dim != index dim: no crash
+    for (const auto& r : res) CHECK(r.cell_id != 0);
+}
+
+void test_hardening_word_boundaries() {
+    Store s("words");
+    const Timestamp t0 = 1'700'000'000'000LL;
+    // "wash" contains "was", "gold" contains "old": must not route Historical.
+    auto cq = s.compile("Where should I wash the gold dishes?", t0);
+    CHECK(cq.plan.time_mode != TimeMode::Historical);
+    // "blinking" contains "link": must not route MultiHop.
+    auto cq2 = s.compile("Why is the light blinking?", t0);
+    CHECK(cq2.plan.relation_mode != cmcore::RelationMode::MultiHop);
+}
+
+void test_hardening_corrupt_load_keeps_state() {
+    Store s("corrupt");
+    const Timestamp t0 = 1'700'000'000'000LL;
+    CellInput a;
+    a.subject = "user";
+    a.predicate = "location";
+    a.text = "User lives in Seattle";
+    a.observed_at = t0;
+    a.valid_from = t0;
+    s.reconcile(a);
+    CHECK(s.cell_count() == 1);
+
+    // Garbage file: load throws AND live state survives (transactional).
+    const std::string bad = "/tmp/cm_hardening_bad.cm.bin";
+    {
+        FILE* f = std::fopen(bad.c_str(), "wb");
+        const char junk[64] = {1, 2, 3};
+        std::fwrite(junk, 1, sizeof(junk), f);
+        std::fclose(f);
+    }
+    bool threw = false;
+    try {
+        s.load(bad);
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    CHECK(threw);
+    CHECK(s.cell_count() == 1);
+    std::remove(bad.c_str());
+
+    // Truncated journal (trailing bytes): also throws, state survives.
+    const std::string path = "/tmp/cm_hardening_trunc.cm.bin";
+    s.save(path);
+    {
+        FILE* f = std::fopen(path.c_str(), "ab");
+        const char tail[5] = {9, 9, 9, 9, 9};
+        std::fwrite(tail, 1, sizeof(tail), f);
+        std::fclose(f);
+    }
+    threw = false;
+    try {
+        s.load(path);
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    CHECK(threw);
+    CHECK(s.cell_count() == 1);
+    std::remove(path.c_str());
+}
+
 struct TestCase {
     const char* name;
     void (*fn)();
@@ -471,6 +613,11 @@ const TestCase kTests[] = {
     {"journal_roundtrip", test_journal_roundtrip},
     {"expire_and_abstention", test_expire_and_abstention},
     {"graph_expansion_cap", test_graph_expansion_cap},
+    {"hardening_no_rewind_and_bounds", test_hardening_no_rewind_and_bounds},
+    {"hardening_vector_dims", test_hardening_vector_dims},
+    {"hardening_word_boundaries", test_hardening_word_boundaries},
+    {"hardening_corrupt_load_keeps_state",
+     test_hardening_corrupt_load_keeps_state},
 };
 
 }  // namespace

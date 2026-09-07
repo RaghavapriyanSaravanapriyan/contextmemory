@@ -71,6 +71,17 @@ enum class RelationMode : uint8_t {
     None = 3,
 };
 
+// --- validation (journal / FFI hardening) -----------------------------------
+// Raw u8 values from persistence or language bindings must never be
+// static_cast into enums unchecked: out-of-range kinds feed bit-shifts
+// (kind_mask) and switch dispatch. These helpers centralize the check.
+
+inline bool is_valid_kind(uint8_t k) { return k <= 4; }
+inline bool is_valid_status(uint8_t k) { return k <= 4; }
+inline bool is_valid_edge(uint8_t k) { return k <= 4; }
+inline bool is_valid_timemode(uint8_t k) { return k <= 4; }
+inline bool is_valid_relmode(uint8_t k) { return k <= 3; }
+
 // --- immutable raw evidence -------------------------------------------------
 
 struct Episode {

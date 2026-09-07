@@ -110,10 +110,12 @@ std::vector<std::pair<uint64_t, float>> Bm25Index::score(
 
     std::unordered_map<uint64_t, float> scores;
     if (candidates.empty()) {
+        scores.reserve(n * 2);
         for (const auto& [fid, len] : doc_len_) scores[fid] = 0.0f;
     } else {
+        scores.reserve(candidates.size() * 2);
         for (uint64_t fid : candidates) {
-            if (doc_len_.count(fid)) scores[fid] = 0.0f;
+            if (doc_len_.find(fid) != doc_len_.end()) scores[fid] = 0.0f;
         }
     }
     if (scores.empty()) return {};
@@ -130,17 +132,29 @@ std::vector<std::pair<uint64_t, float>> Bm25Index::score(
         for (const auto& [fid, tf] : postings) {
             auto it = scores.find(fid);
             if (it == scores.end()) continue;
-            const uint32_t len = doc_len_.at(fid);
-            const double dl = static_cast<double>(len);
+            auto lit = doc_len_.find(fid);
+            if (lit == doc_len_.end()) continue;
+            const double dl = static_cast<double>(lit->second);
             it->second += static_cast<float>(
                 idf * (tf * (k1 + 1.0)) / (tf + k1 * (1.0 - b + b * dl / avg_dl)));
         }
     }
 
     std::vector<std::pair<uint64_t, float>> out(scores.begin(), scores.end());
+    if (out.size() > top_k) {
+        std::nth_element(out.begin(), out.begin() + top_k, out.end(),
+                          [](const auto& a, const auto& b) {
+                              if (a.second != b.second)
+                                  return a.second > b.second;
+                              return a.first < b.first;
+                          });
+        out.resize(top_k);
+    }
     std::sort(out.begin(), out.end(),
-              [](const auto& a, const auto& b) { return a.second > b.second; });
-    if (out.size() > top_k) out.resize(top_k);
+              [](const auto& a, const auto& b) {
+                  if (a.second != b.second) return a.second > b.second;
+                  return a.first < b.first;
+              });
     return out;
 }
 
@@ -172,7 +186,15 @@ bool VectorIndex::has(uint64_t fact_id) const {
 
 void VectorIndex::add(uint64_t fact_id, std::span<const float> vec) {
     if (index_of_.count(fact_id)) remove(fact_id);
-    if (dim_ == 0) dim_ = vec.size();
+    if (vec.empty()) return;  // nothing to index
+    if (dim_ == 0) {
+        dim_ = vec.size();
+    } else if (vec.size() != dim_) {
+        // Dimension lock: a mismatched vector would corrupt every later
+        // dot_product (heap OOB read of dim_ floats from a short vector).
+        // Reject loudly-silent: keep the first dimension, drop the write.
+        return;
+    }
     // Normalize so cosine == dot product.
     std::vector<float> v(vec.begin(), vec.end());
     double norm = 0.0;
@@ -204,6 +226,7 @@ float VectorIndex::similarity(uint64_t fact_id,
     auto it = index_of_.find(fact_id);
     if (it == index_of_.end() || query.size() != dim_) return 0.0f;
     const auto& v = vecs_[it->second];
+    if (v.size() != dim_) return 0.0f;  // corrupt entry: never OOB
     return dot_product(v.data(), query.data(), dim_);
 }
 
@@ -217,6 +240,7 @@ std::vector<std::pair<uint64_t, float>> VectorIndex::top_k(
         auto it = index_of_.find(fid);
         if (it == index_of_.end()) return;
         const auto& v = vecs_[it->second];
+        if (v.size() != dim_) return;  // corrupt entry: never OOB
         out.emplace_back(fid, dot_product(v.data(), query.data(), dim_));
     };
     if (candidates.empty()) {
@@ -224,9 +248,20 @@ std::vector<std::pair<uint64_t, float>> VectorIndex::top_k(
     } else {
         for (uint64_t fid : candidates) consider(fid);
     }
+    if (out.size() > top_k) {
+        std::nth_element(out.begin(), out.begin() + top_k, out.end(),
+                          [](const auto& a, const auto& b) {
+                              if (a.second != b.second)
+                                  return a.second > b.second;
+                              return a.first < b.first;
+                          });
+        out.resize(top_k);
+    }
     std::sort(out.begin(), out.end(),
-              [](const auto& a, const auto& b) { return a.second > b.second; });
-    if (out.size() > top_k) out.resize(top_k);
+              [](const auto& a, const auto& b) {
+                  if (a.second != b.second) return a.second > b.second;
+                  return a.first < b.first;
+              });
     return out;
 }
 

@@ -34,6 +34,7 @@ nb::dict result_dict(const SearchResult& r) {
     d["confidence"] = r.confidence;
     d["salience"] = r.salience;
     d["access_heat"] = r.access_heat;
+    d["observed_at"] = r.observed_at;
     d["valid_from"] = r.valid_from;
     d["valid_until"] = r.valid_until;
     d["root_id"] = r.root_id;
@@ -58,11 +59,21 @@ SearchResult result_from_dict(const nb::dict& d) {
     r.predicate = nb::cast<std::string>(d["predicate"]);
     r.object = nb::cast<std::string>(d["object"]);
     r.score = nb::cast<float>(d["score"]);
-    r.kind = static_cast<CellKind>(nb::cast<int>(d["kind"]));
-    r.status = static_cast<CellStatus>(nb::cast<int>(d["status"]));
+    int kind = nb::cast<int>(d["kind"]);
+    int status = nb::cast<int>(d["status"]);
+    if (kind < 0 || kind > 4)
+        throw nb::value_error("invalid cell kind (expected 0-4)");
+    if (status < 0 || status > 4)
+        throw nb::value_error("invalid cell status (expected 0-4)");
+    r.kind = static_cast<CellKind>(kind);
+    r.status = static_cast<CellStatus>(status);
     r.confidence = nb::cast<float>(d["confidence"]);
     r.salience = nb::cast<float>(d["salience"]);
     r.access_heat = nb::cast<uint32_t>(d["access_heat"]);
+    // observed_at is new in the hardened core; old callers (cached dicts)
+    // may not carry it — default to 0 rather than KeyError.
+    r.observed_at =
+        d.contains("observed_at") ? nb::cast<int64_t>(d["observed_at"]) : 0;
     r.valid_from = nb::cast<int64_t>(d["valid_from"]);
     r.valid_until = nb::cast<int64_t>(d["valid_until"]);
     r.root_id = nb::cast<uint64_t>(d["root_id"]);
@@ -155,6 +166,9 @@ NB_MODULE(_core, m) {
                 const std::string& source_ref, uint32_t source_begin,
                 uint32_t source_end, const std::vector<std::string>& tags,
                 const std::vector<std::string>& entities) {
+                 if (kind < 0 || kind > 4)
+                     throw nb::value_error(
+                         "invalid cell kind (expected 0-4)");
                  CellInput in;
                  in.subject = subject;
                  in.predicate = predicate;
@@ -204,6 +218,8 @@ NB_MODULE(_core, m) {
              nb::arg("subject"), nb::arg("predicate"),
              "Current state projection, or None.")
         .def("bump_access", &Store::bump_access, nb::arg("cell_id"))
+        .def("forget", &Store::forget, nb::arg("cell_id"),
+             "Mark a cell Forgotten (excluded from active retrieval).")
         .def("add_embedding",
              [](Store& s, uint64_t cell_id, const std::vector<float>& vec) {
                  s.add_embedding(cell_id, vec);
@@ -229,6 +245,11 @@ NB_MODULE(_core, m) {
                 const std::string& subject_hint,
                 const std::string& predicate_hint,
                 const std::vector<float>& query_vec) {
+                 if (time_mode < 0 || time_mode > 4)
+                     throw nb::value_error("invalid time_mode (expected 0-4)");
+                 if (relation_mode < 0 || relation_mode > 3)
+                     throw nb::value_error(
+                         "invalid relation_mode (expected 0-3)");
                  QueryPlan plan;
                  plan.text = text;
                  plan.time_mode = static_cast<TimeMode>(time_mode);
@@ -264,6 +285,11 @@ NB_MODULE(_core, m) {
                 int64_t at_time, int time_mode, int64_t time_start,
                 int64_t time_end, uint32_t candidate_cap,
                 uint32_t expansion_cap, size_t token_budget, int relation_mode) {
+                 if (time_mode < 0 || time_mode > 4)
+                     throw nb::value_error("invalid time_mode (expected 0-4)");
+                 if (relation_mode < 0 || relation_mode > 3)
+                     throw nb::value_error(
+                         "invalid relation_mode (expected 0-3)");
                  QueryPlan plan;
                  plan.time_mode = static_cast<TimeMode>(time_mode);
                  plan.time_start = time_start;

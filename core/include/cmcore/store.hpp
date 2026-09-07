@@ -18,6 +18,7 @@
 #include "types.hpp"
 
 #include <cstdint>
+#include <mutex>
 #include <span>
 #include <string>
 #include <vector>
@@ -78,6 +79,7 @@ struct SearchResult {
     float confidence = 1.0f;
     float salience = 0.5f;
     uint32_t access_heat = 0;
+    Timestamp observed_at = 0;  // system time (recency ordering, int64-exact)
     Timestamp valid_from = 0;
     Timestamp valid_until = kNever;
     uint64_t root_id = 0;
@@ -158,7 +160,18 @@ public:
     void add_embedding(uint64_t cell_id, std::span<const float> vec);
     void link(EdgeType type, uint64_t from, uint64_t to, Timestamp at);
 
+    // --- forgetting ---------------------------------------------------------
+    // Marks a cell Forgotten so active retrieval excludes it. Returns true
+    // when the id existed and changed state. The evidence (cell bytes,
+    // journal) is retained for audit; only the read path excludes it.
+    bool forget(uint64_t cell_id);
+
     // --- introspection ------------------------------------------------------
+    // NOTE: cell()/episode()/projection() return non-owning pointers into
+    // Store vectors. They are valid until the next mutating call on this
+    // Store (reconcile/create_cell/load/forget do not move pointed-to
+    // objects in place, but vector reallocation on growth invalidates all
+    // such pointers). Copy what you need; never retain across mutations.
     const MemoryCell* cell(uint64_t id) const;
     const Episode* episode(uint64_t id) const;
     size_t cell_count() const { return cells_.size(); }
@@ -201,10 +214,23 @@ private:
     std::unordered_map<uint64_t, std::vector<uint64_t>> entity_to_cells_;
     std::unordered_map<std::string, std::vector<uint64_t>> tag_to_cells_;
     std::unordered_map<std::string, uint64_t> content_hash_to_cell_;
+    // Fast paths: O(1) cell lookup (was linear scan) and O(1) entity
+    // resolution (was linear scan with per-entity lowercase alloc).
+    std::unordered_map<uint64_t, size_t> id_to_index_;
+    std::unordered_map<std::string, uint64_t> entity_name_to_id_;
+    std::unordered_map<uint64_t, std::string> entity_id_to_name_;
     uint64_t id_counter_ = 1;
 
     Bm25Index bm25_;
     VectorIndex vectors_;
+
+    // Thread safety: all public Store methods take this lock. The engine is
+    // correct under concurrent readers and single-writer + multi-reader use
+    // from the Python server/MCP/TUI processes (each process has its own
+    // Store; threads inside one process share it). Lock granularity is
+    // per-Store; hot-path overhead is one uncontended mutex (~20ns).
+    // Recursive: public reconcile() calls public create_cell() internally.
+    mutable std::recursive_mutex mu_;
 };
 
 }  // namespace cmcore

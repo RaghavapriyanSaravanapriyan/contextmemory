@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <regex>
@@ -148,7 +149,7 @@ std::string lower(const std::string& s) {
     return out;
 }
 
-bool contains_any(const std::string& lower_text,
+[[maybe_unused]] bool contains_any(const std::string& lower_text,
                   std::initializer_list<const char*> words) {
     for (const char* w : words) {
         if (lower_text.find(w) != std::string::npos) return true;
@@ -348,6 +349,12 @@ bool deserialize_embedding(const u8* data, size_t len, u64& cell_id,
 
 // --- fusion -----------------------------------------------------------------
 
+// Maximum version-chain hops followed in any parent-chain walk. Corrupt
+// journals (or crafted payloads) can contain parent cycles (A<->B); without a
+// bound every chain walk becomes an infinite hang. 128 covers any real
+// version history by orders of magnitude.
+constexpr int kMaxChainDepth = 128;
+
 std::unordered_map<uint64_t, float> rrf_fuse(
     const std::vector<std::vector<std::pair<uint64_t, float>>>& channels) {
     std::unordered_map<uint64_t, float> fused;
@@ -390,35 +397,67 @@ Timestamp epoch_ms(int y, int mo, int d) {
 // out when a date is found (YYYY/MM/DD, YYYY-MM-DD, "march 5 2024", "in 2023").
 bool extract_date(const std::string& lower, Timestamp& out) {
     static const std::regex slash_re(R"((\d{4})[/-](\d{1,2})[/-](\d{1,2}))");
+    static const std::regex mdY_re(R"((\d{1,2})[,\s]*(\d{4}))");
+    static const std::regex year_re(R"(\b(1[0-9]{3}|20[0-9]{2})\b)");
+    static const std::regex bare_year_re(R"(\d{4})");
     std::smatch m;
-    if (std::regex_search(lower, m, slash_re)) {
-        out = epoch_ms(std::stoi(m[1]), std::stoi(m[2]), std::stoi(m[3]));
-        return true;
+    // NOTE: std::regex_search return value is load-bearing. A stale smatch
+    // from a previous call must never be read (m.size() on no-match is 0).
+    try {
+        if (std::regex_search(lower, m, slash_re) && m.size() >= 4) {
+            int y = std::stoi(m[1]), mo = std::stoi(m[2]), d = std::stoi(m[3]);
+            if (mo < 1 || mo > 12 || d < 1 || d > 31) return false;
+            out = epoch_ms(y, mo, d);
+            return true;
+        }
+    } catch (const std::exception&) {
+        return false;
     }
     // "<month> <day>, <year>" or "<month> <year>" or "<month> <day> <year>"
-    for (const auto& [name, mo] : month_map()) {
+    // Iterate a fixed ordered month list so "sep" never shadows "september":
+    // longest names first, deterministic regardless of hash order.
+    static const std::pair<const char*, int> kMonths[] = {
+        {"september", 9}, {"january", 1}, {"february", 2}, {"march", 3},
+        {"april", 4}, {"august", 8}, {"november", 11}, {"december", 12},
+        {"october", 10}, {"sept", 9}, {"jan", 1}, {"feb", 2}, {"mar", 3},
+        {"apr", 4}, {"may", 5}, {"jun", 6}, {"jul", 7}, {"aug", 8},
+        {"sep", 9}, {"oct", 10}, {"nov", 11}, {"dec", 12}, {"june", 6},
+        {"july", 7},
+    };
+    for (const auto& [name, mo] : kMonths) {
         const size_t pos = lower.find(name);
         if (pos == std::string::npos) continue;
-        const std::string rest = lower.substr(pos + name.size());
-        int day = 0;
-        int year = 0;
-        std::regex_search(rest, m, std::regex(R"((\d{1,2})[,\s]*(\d{4}))"));
-        if (m.size() >= 3) {
-            day = std::stoi(m[1]);
-            year = std::stoi(m[2]);
-        } else {
-            std::regex_search(rest, m, std::regex(R"(\d{4})"));
-            if (m.size() >= 1) year = std::stoi(m[0]);
+        const std::string rest = lower.substr(pos + std::strlen(name));
+        try {
+            int day = 0;
+            int year = 0;
+            if (std::regex_search(rest, m, mdY_re) && m.size() >= 3) {
+                day = std::stoi(m[1]);
+                year = std::stoi(m[2]);
+            } else if (std::regex_search(rest, m, bare_year_re) &&
+                       m.size() >= 1) {
+                year = std::stoi(m[0]);
+            } else {
+                continue;  // month word without a year is not a date
+            }
+            if (year < 1000 || year > 2100) continue;
+            if (day == 0) day = 1;
+            if (day < 1 || day > 31) continue;
+            out = epoch_ms(year, mo, day);
+            return true;
+        } catch (const std::exception&) {
+            continue;
         }
-        if (year == 0) year = 2000;
-        if (day == 0) day = 1;
-        out = epoch_ms(year, mo, day);
-        return true;
     }
-    std::regex_search(lower, m, std::regex(R"(\b(1[0-9]{3}|20[0-9]{2})\b)"));
-    if (m.size() >= 1) {
-        out = epoch_ms(std::stoi(m[0]), 1, 1);
-        return true;
+    try {
+        if (std::regex_search(lower, m, year_re) && m.size() >= 1) {
+            int y = std::stoi(m[0]);
+            if (y < 1000 || y > 2100) return false;
+            out = epoch_ms(y, 1, 1);
+            return true;
+        }
+    } catch (const std::exception&) {
+        return false;
     }
     return false;
 }
@@ -434,6 +473,7 @@ Store::Store(std::string container_tag)
 uint64_t Store::next_id() { return id_counter_++; }
 
 uint64_t Store::capture_episode(const Episode& ep) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
     Episode e = ep;
     if (e.container == 0) e.container = container_;
     if (e.observed_at == 0) e.observed_at = now_ms();
@@ -444,7 +484,9 @@ uint64_t Store::capture_episode(const Episode& ep) {
 }
 
 uint64_t Store::ensure_entity(const std::string& name, uint64_t cell_id) {
-    uint64_t eid = resolve_entity(name);
+    const std::string lname = lower(name);
+    auto cached = entity_name_to_id_.find(lname);
+    uint64_t eid = (cached != entity_name_to_id_.end()) ? cached->second : 0;
     if (eid == 0) {
         Entity en;
         en.id = next_id();
@@ -453,6 +495,8 @@ uint64_t Store::ensure_entity(const std::string& name, uint64_t cell_id) {
         en.fact_ref = cell_id;
         entities_.push_back(std::move(en));
         eid = entities_.back().id;
+        entity_name_to_id_[lname] = eid;
+        entity_id_to_name_[eid] = name;
     }
     auto& facts = entity_to_cells_[eid];
     if (std::find(facts.begin(), facts.end(), cell_id) == facts.end()) {
@@ -462,17 +506,16 @@ uint64_t Store::ensure_entity(const std::string& name, uint64_t cell_id) {
 }
 
 uint64_t Store::resolve_entity(const std::string& name) const {
-    const std::string lname = lower(name);
-    for (const auto& e : entities_) {
-        if (e.container == container_ && lower(e.name) == lname) return e.id;
-    }
-    return 0;
+    auto it = entity_name_to_id_.find(lower(name));
+    return it != entity_name_to_id_.end() ? it->second : 0;
 }
 
 void Store::index_cell(const MemoryCell& c) {
     auto toks = tokenize(c.text);
     bm25_.add(c.id, toks);
     for (const auto& t : c.tags) {
+        // Tags are stored lowercased at reconcile time; lower() here is a
+        // cheap guard for cells created via the low-level create_cell path.
         tag_to_cells_[lower(t)].push_back(c.id);
     }
     content_hash_to_cell_[c.text] = c.id;
@@ -496,28 +539,31 @@ void Store::unindex_cell(uint64_t cell_id) {
 }
 
 uint64_t Store::create_cell(const MemoryCell& cell) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
     MemoryCell c = cell;
     c.id = next_id();
     c.container = container_;
     if (c.content_hash == 0) c.content_hash = fnv1a(c.text);
     cells_.push_back(std::move(c));
+    id_to_index_[cells_.back().id] = cells_.size() - 1;
     index_cell(cells_.back());
     return cells_.back().id;
 }
 
 void Store::update_projection(const MemoryCell& c) {
     if (c.subject.empty() || c.predicate.empty()) return;
-    const std::string key = c.subject + "\x1f" + c.predicate;
     uint64_t version_count = 1;
     uint64_t root = c.root_id ? c.root_id : c.id;
     if (c.parent_id) {
-        // count ancestors
+        // count ancestors with cycle + depth guard (corrupt journal safety)
         uint64_t cur = c.parent_id;
-        while (cur) {
+        std::unordered_set<uint64_t> seen{cur};
+        for (int depth = 0; depth < kMaxChainDepth && cur;) {
             ++version_count;
             const MemoryCell* p = cell(cur);
-            if (!p) break;
+            if (!p || p->parent_id == 0) break;
             cur = p->parent_id;
+            if (!seen.insert(cur).second) break;  // cycle
         }
     }
     for (auto& p : projections_) {
@@ -543,6 +589,7 @@ void Store::update_projection(const MemoryCell& c) {
 
 const StateProjection* Store::projection(const std::string& subject,
                                          const std::string& predicate) const {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
     for (const auto& p : projections_) {
         if (p.container == container_ && p.subject == subject &&
             p.predicate == predicate)
@@ -552,6 +599,7 @@ const StateProjection* Store::projection(const std::string& subject,
 }
 
 uint64_t Store::reconcile(const CellInput& in) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
     if (in.text.empty()) return 0;
     const Timestamp observed = in.observed_at ? in.observed_at : now_ms();
     const Timestamp valid = in.valid_from ? in.valid_from : observed;
@@ -580,6 +628,16 @@ uint64_t Store::reconcile(const CellInput& in) {
     nc.source_begin = in.source_begin;
     nc.source_end = in.source_end;
     nc.content_hash = fnv1a(in.text);
+    // Tags were previously attached AFTER indexing, so the tag channel was
+    // silently empty (plan.tags never matched). Normalize + attach BEFORE
+    // create_cell/index_cell so tag_to_cells_ is actually populated.
+    nc.tags.reserve(in.tags.size());
+    for (const auto& t : in.tags) {
+        if (t.empty()) continue;
+        std::string lt = lower(t);
+        if (std::find(nc.tags.begin(), nc.tags.end(), lt) == nc.tags.end())
+            nc.tags.push_back(std::move(lt));
+    }
 
     bool out_of_order = false;
     if (!nc.subject.empty() && !nc.predicate.empty()) {
@@ -588,19 +646,14 @@ uint64_t Store::reconcile(const CellInput& in) {
             const MemoryCell* cur = cell(proj->active_cell);
             if (cur) {
                 if (valid >= cur->valid_from) {
-                    // versioning: supersede the current cell
-                    MemoryCell* old = nullptr;
-                    for (auto& c : cells_) {
-                        if (c.id == cur->id) {
-                            old = &c;
-                            break;
-                        }
-                    }
-                    if (old) {
-                        old->valid_until = valid;
-                        old->status = CellStatus::Superseded;
-                        nc.parent_id = old->id;
-                        nc.root_id = old->root_id ? old->root_id : old->id;
+                    // versioning: supersede the current cell (O(1) lookup)
+                    auto oit = id_to_index_.find(cur->id);
+                    if (oit != id_to_index_.end()) {
+                        MemoryCell& old = cells_[oit->second];
+                        old.valid_until = valid;
+                        old.status = CellStatus::Superseded;
+                        nc.parent_id = old.id;
+                        nc.root_id = old.root_id ? old.root_id : old.id;
                     }
                 } else {
                     out_of_order = true;  // earlier event: keep both, link
@@ -610,13 +663,9 @@ uint64_t Store::reconcile(const CellInput& in) {
     }
 
     uint64_t id = create_cell(nc);
-    MemoryCell* created = nullptr;
-    for (auto& c : cells_) {
-        if (c.id == id) {
-            created = &c;
-            break;
-        }
-    }
+    auto cit = id_to_index_.find(id);
+    MemoryCell* created = (cit != id_to_index_.end()) ? &cells_[cit->second]
+                                                      : nullptr;
 
     for (const auto& name : in.entities) {
         const uint64_t eid = ensure_entity(name, id);
@@ -625,9 +674,6 @@ uint64_t Store::reconcile(const CellInput& in) {
                                  eid) == created->entity_ids.end()) {
             created->entity_ids.push_back(eid);
         }
-    }
-    for (const auto& t : in.tags) {
-        if (!t.empty()) created->tags.push_back(t);
     }
 
     if (nc.parent_id) {
@@ -638,31 +684,43 @@ uint64_t Store::reconcile(const CellInput& in) {
             add_edge(EdgeType::Related, proj->active_cell, id, observed);
         }
     }
-    if (!nc.subject.empty() && !nc.predicate.empty()) {
+    // Out-of-order (late-arriving older event) must never rewind the
+    // projection: current truth stays at the newest valid_from. The older
+    // cell remains queryable as history via the Related edge + validity
+    // window, but the projection keeps pointing at the newest event.
+    if (!nc.subject.empty() && !nc.predicate.empty() && !out_of_order) {
         update_projection(*created);
     }
     return id;
 }
 
 void Store::set_access_heat(uint64_t cell_id, uint32_t heat) {
-    for (auto& c : cells_) {
-        if (c.id == cell_id) {
-            c.access_heat = heat;
-            return;
-        }
-    }
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    auto it = id_to_index_.find(cell_id);
+    if (it != id_to_index_.end()) cells_[it->second].access_heat = heat;
 }
 
 void Store::bump_access(uint64_t cell_id) {
-    for (auto& c : cells_) {
-        if (c.id == cell_id) {
-            if (c.access_heat < 0xFFFFFFFEu) ++c.access_heat;
-            return;
-        }
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    auto it = id_to_index_.find(cell_id);
+    if (it != id_to_index_.end()) {
+        uint32_t& h = cells_[it->second].access_heat;
+        if (h < 0xFFFFFFFEu) ++h;
     }
 }
 
+bool Store::forget(uint64_t cell_id) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    auto it = id_to_index_.find(cell_id);
+    if (it == id_to_index_.end()) return false;
+    MemoryCell& c = cells_[it->second];
+    if (c.status == CellStatus::Forgotten) return false;
+    c.status = CellStatus::Forgotten;
+    return true;
+}
+
 void Store::add_edge(EdgeType type, uint64_t from, uint64_t to, Timestamp at) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
     Edge e;
     e.id = next_id();
     e.container = container_;
@@ -678,18 +736,22 @@ void Store::link(EdgeType type, uint64_t from, uint64_t to, Timestamp at) {
 }
 
 void Store::add_embedding(uint64_t cell_id, std::span<const float> vec) {
-    if (!cell(cell_id)) return;
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    auto it = id_to_index_.find(cell_id);
+    if (it == id_to_index_.end()) return;
     vectors_.add(cell_id, vec);
 }
 
 const MemoryCell* Store::cell(uint64_t id) const {
-    for (const auto& c : cells_) {
-        if (c.id == id) return &c;
-    }
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    auto it = id_to_index_.find(id);
+    if (it != id_to_index_.end() && it->second < cells_.size())
+        return &cells_[it->second];
     return nullptr;
 }
 
 const Episode* Store::episode(uint64_t id) const {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
     for (const auto& e : episodes_) {
         if (e.id == id) return &e;
     }
@@ -713,9 +775,35 @@ std::pair<std::string, std::string> Store::infer_subject_predicate(
     const std::string& question,
     const std::vector<std::string>& entities) const {
     const std::string lq = lower(question);
+    // Word-boundary routing: substring search on raw text misfires
+    // ("my" in "enemy", "was" in "wash", "old" in "gold", "link" in
+    // "blinking"). Single words match on token set; multi-word phrases match
+    // on space-padded substring with left boundary.
+    std::unordered_set<std::string> toks;
+    {
+        std::string cur;
+        for (char ch : lq) {
+            if (std::isalnum(static_cast<unsigned char>(ch))) {
+                cur.push_back(ch);
+            } else {
+                if (!cur.empty()) toks.insert(cur);
+                cur.clear();
+            }
+        }
+        if (!cur.empty()) toks.insert(cur);
+    }
+    const std::string padded = " " + lq + " ";
+    auto has_word = [&](const char* w) -> bool {
+        std::string s(w);
+        if (s.find(' ') != std::string::npos) {
+            return padded.find(" " + s) != std::string::npos;
+        }
+        return toks.count(s) != 0;
+    };
     std::string subject;
-    if (contains_any(lq, {" i ", "i ", " my ", "my ", "i'm", "i've", "i am",
-                          "me ", " user "})) {
+    if (has_word("i") || has_word("my") || has_word("i'm") ||
+        has_word("i've") || has_word("i am") || has_word("me") ||
+        has_word("user")) {
         subject = "user";
     }
     // If an explicit entity is present, prefer it as the subject for
@@ -742,7 +830,7 @@ std::pair<std::string, std::string> Store::infer_subject_predicate(
     };
     for (const auto& entry : lex) {
         for (const char* w : entry.words) {
-            if (lq.find(w) != std::string::npos) {
+            if (has_word(w)) {
                 predicate = entry.pred;
                 break;
             }
@@ -754,20 +842,48 @@ std::pair<std::string, std::string> Store::infer_subject_predicate(
 
 CompiledQuery Store::compile(const std::string& question,
                              Timestamp at_time) const {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
     const std::string lq = lower(question);
     CompiledQuery cq;
     QueryPlan& plan = cq.plan;
     SearchTrace& trace = cq.trace;
     plan.text = question;
 
-    // 1. Time mode
-    if (contains_any(lq, {"now", "currently", "right now", "at the moment",
-                          "today", "these days", "lately", "current"})) {
+    // 1. Time mode (word-boundary: "was" must not fire inside "wash",
+    // "old" inside "gold", "then" inside "northern").
+    std::unordered_set<std::string> qtok_set;
+    {
+        std::string cur;
+        for (char ch : lq) {
+            if (std::isalnum(static_cast<unsigned char>(ch))) {
+                cur.push_back(ch);
+            } else {
+                if (!cur.empty()) qtok_set.insert(cur);
+                cur.clear();
+            }
+        }
+        if (!cur.empty()) qtok_set.insert(cur);
+    }
+    const std::string padded = " " + lq + " ";
+    auto has_phrase = [&](const char* w) -> bool {
+        return padded.find(std::string(" ") + w) != std::string::npos;
+    };
+    auto has_tok = [&](const char* w) -> bool {
+        std::string s(w);
+        if (s.find(' ') != std::string::npos) return has_phrase(w);
+        return qtok_set.count(s) != 0;
+    };
+    auto has_any = [&](std::initializer_list<const char*> words) -> bool {
+        for (const char* w : words)
+            if (has_tok(w)) return true;
+        return false;
+    };
+    if (has_any({"now", "currently", "right now", "at the moment", "today",
+                 "these days", "lately", "current"})) {
         plan.time_mode = TimeMode::Current;
         plan.time_end = at_time;
-    } else if (contains_any(lq, {"before", "used to", "previously", "prior",
-                                 "earlier", "then", "formerly", "in the past",
-                                 "old", "was"})) {
+    } else if (has_any({"before", "used to", "previously", "prior", "earlier",
+                        "then", "formerly", "in the past", "old", "was"})) {
         plan.time_mode = TimeMode::Historical;
         plan.time_end = at_time;
     } else {
@@ -776,8 +892,8 @@ CompiledQuery Store::compile(const std::string& question,
             plan.time_mode = TimeMode::Interval;
             plan.time_start = date;
             plan.time_end = date + 86'400'000LL;
-        } else if (contains_any(lq, {"ago", "last week", "last month",
-                                     "last year", "yesterday", "recent"})) {
+        } else if (has_any({"ago", "last week", "last month", "last year",
+                              "yesterday", "recent"})) {
             plan.time_mode = TimeMode::Relative;
             plan.time_end = at_time;
         } else {
@@ -788,32 +904,64 @@ CompiledQuery Store::compile(const std::string& question,
     resolve_relative_time(plan, at_time);
     trace.time_mode = plan.time_mode;
 
-    // 2. Entity seeds from known entities present in the question. Generic
-    // role words ("user", "agent", "system") carry no identity and must not
-    // seed the entity channel — they are stopword-level noise.
-    for (const auto& e : entities_) {
-        if (e.container != container_) continue;
-        if (plan.entity_seeds.size() >= 8) break;
-        const std::string lname = lower(e.name);
-        if (lname.size() < 3) continue;
-        if (lname == "user" || lname == "agent" || lname == "system" ||
-            lname == "assistant" || lname == "the" || lname == "a")
-            continue;
-        if (lq.find(lname) != std::string::npos) {
-            plan.entity_seeds.push_back(e.name);
+    // 2. Entity seeds via token n-gram lookup (O(tokens), not O(entities)).
+    // Multi-word entities ("new york") match on joined bigrams/trigrams.
+    // Generic role words carry no identity and must not seed the channel.
+    {
+        const auto qtoks = tokenize(lq);
+        std::unordered_set<std::string> seen;
+        auto try_seed = [&](const std::string& key) {
+            if (key.size() < 3 || seen.count(key)) return;
+            if (key == "user" || key == "agent" || key == "system" ||
+                key == "assistant")
+                return;
+            auto it = entity_name_to_id_.find(key);
+            if (it == entity_name_to_id_.end()) return;
+            auto nm = entity_id_to_name_.find(it->second);
+            seen.insert(key);
+            plan.entity_seeds.push_back(
+                nm != entity_id_to_name_.end() ? nm->second : key);
+        };
+        for (size_t i = 0; i < qtoks.size() && plan.entity_seeds.size() < 8;
+             ++i) {
+            try_seed(qtoks[i]);
+            if (i + 1 < qtoks.size()) {
+                std::string bi = qtoks[i] + " " + qtoks[i + 1];
+                try_seed(bi);
+            }
+            if (i + 2 < qtoks.size()) {
+                std::string tri =
+                    qtoks[i] + " " + qtoks[i + 1] + " " + qtoks[i + 2];
+                try_seed(tri);
+            }
+        }
+        // Substring fallback for single-token entities embedded in
+        // compounds the tokenizer split (rare; bounded: first 64 entities).
+        // Skipped at scale — n-gram lookup above covers the hot path.
+        if (plan.entity_seeds.empty() && entities_.size() <= 64) {
+            for (const auto& e : entities_) {
+                if (e.container != container_) continue;
+                if (plan.entity_seeds.size() >= 8) break;
+                const std::string lname = lower(e.name);
+                if (lname.size() < 3) continue;
+                if (lname == "user" || lname == "agent" || lname == "system" ||
+                    lname == "assistant" || lname == "the" || lname == "a")
+                    continue;
+                if (lq.find(lname) != std::string::npos) {
+                    plan.entity_seeds.push_back(e.name);
+                }
+            }
         }
     }
 
-    // 3. Relation mode
-    if (contains_any(lq, {"between", "both", "related to", "how are",
-                          "compared", "together", "combined", "connect",
-                          "connects", "connection", "link", "links",
-                          "how do", "how does"})) {
+    // 3. Relation mode (word-boundary: "link" must not fire in "blinking")
+    if (has_any({"between", "both", "related to", "how are", "compared",
+                 "together", "combined", "connect", "connects", "connection",
+                 "link", "links", "how do", "how does"})) {
         plan.relation_mode = RelationMode::MultiHop;
         plan.expansion_cap = 2;
-    } else if (contains_any(lq, {"why", "because", "caused", "led to",
-                                 "resulted", "how to", "steps", "process",
-                                 "reason"})) {
+    } else if (has_any({"why", "because", "caused", "led to", "resulted",
+                        "how to", "steps", "process", "reason"})) {
         plan.relation_mode = RelationMode::Causal;
         plan.expansion_cap = 2;
     } else {
@@ -876,7 +1024,10 @@ std::vector<uint64_t> Store::active_candidates(const QueryPlan& plan,
     const Timestamp t1 = plan.time_end != kNever ? plan.time_end : at;
     for (const auto& c : cells_) {
         if (c.container != container_) continue;
-        if (!(plan.kind_mask & (1u << static_cast<u32>(c.kind)))) continue;
+        // kind_mask guard: crafted journals / FFI can carry kind > 31;
+        // a 1u << 32+ shift is UB. Unknown kinds never match.
+        const auto kind_u = static_cast<u32>(c.kind);
+        if (kind_u >= 32 || !(plan.kind_mask & (1u << kind_u))) continue;
         bool keep = false;
         switch (plan.time_mode) {
             case TimeMode::Current:
@@ -903,38 +1054,52 @@ std::vector<uint64_t> Store::active_candidates(const QueryPlan& plan,
             }
         }
         if (!keep) continue;
-        // tag narrowing: if the plan routed to tags, the cell must match one.
+        // tag narrowing: plan tags are lowercase keys; cell tags are stored
+        // lowercase at reconcile, so this is a direct hash compare (no
+        // per-cell lowercase allocation on the hot loop).
         if (!plan.tags.empty()) {
             bool tagged = false;
             for (const auto& t : c.tags) {
-                if (std::find(plan.tags.begin(), plan.tags.end(), lower(t)) !=
-                    plan.tags.end()) {
-                    tagged = true;
-                    break;
+                for (const auto& pt : plan.tags) {
+                    if (t == pt) { tagged = true; break; }
                 }
+                if (tagged) break;
             }
             if (!tagged) continue;
         }
         out.push_back(c.id);
     }
     // project-direct hits: ensure the active chain cells are always present
-    // even if a tag filter would drop them.
+    // even if a tag filter would drop them. Cycle + depth guarded.
     if (!plan.subject_hint.empty() && !plan.predicate_hint.empty()) {
         const StateProjection* proj = projection(plan.subject_hint,
                                                  plan.predicate_hint);
         if (proj && proj->active_cell) {
             uint64_t cur = proj->active_cell;
-            while (cur) {
-                if (std::find(out.begin(), out.end(), cur) == out.end()) {
+            std::unordered_set<uint64_t> chain_seen;
+            for (int depth = 0;
+                 depth < kMaxChainDepth && cur && chain_seen.insert(cur).second;
+                 ++depth) {
+                const MemoryCell* c = cell(cur);
+                if (!c) break;
+                if (c->status != CellStatus::Forgotten &&
+                    c->status != CellStatus::Disputed &&
+                    std::find(out.begin(), out.end(), cur) == out.end()) {
                     out.push_back(cur);
                 }
-                const MemoryCell* c = cell(cur);
-                if (!c || c->parent_id == 0) break;
+                if (c->parent_id == 0) break;
                 cur = c->parent_id;
             }
         }
     }
-    if (plan.candidate_cap > 0 && out.size() > plan.candidate_cap * 4u) {
+    // candidate_cap == 0 means "no candidates" (used by tests to probe the
+    // empty path), not "everything": without this guard a 0 cap resizes to 0
+    // and BM25's empty-means-all rule would then score the whole store.
+    if (plan.candidate_cap == 0) {
+        out.clear();
+        return out;
+    }
+    if (out.size() > plan.candidate_cap * 4u) {
         out.resize(plan.candidate_cap * 4u);
     }
     return out;
@@ -977,6 +1142,8 @@ void Store::add_expanded(const std::vector<SearchResult>& hits,
                     r.status = c->status;
                     r.confidence = c->confidence;
                     r.salience = c->salience;
+                    r.access_heat = c->access_heat;
+                    r.observed_at = c->observed_at;
                     r.valid_from = c->valid_from;
                     r.valid_until = c->valid_until;
                     r.root_id = c->root_id;
@@ -994,6 +1161,7 @@ void Store::add_expanded(const std::vector<SearchResult>& hits,
 
 std::vector<SearchResult> Store::search(const QueryPlan& plan,
                                         std::span<const float> query_vec) const {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
     std::vector<SearchResult> results;
     const Timestamp at = plan.time_end != kNever ? plan.time_end : now_ms();
 
@@ -1040,7 +1208,10 @@ std::vector<SearchResult> Store::search(const QueryPlan& plan,
         }
         for (const auto& [cid, c] : link_count) entity_ranked.emplace_back(cid, c);
         std::sort(entity_ranked.begin(), entity_ranked.end(),
-                  [](const auto& a, const auto& b) { return a.second > b.second; });
+                  [](const auto& a, const auto& b) {
+                      if (a.second != b.second) return a.second > b.second;
+                      return a.first < b.first;  // deterministic tie-break
+                  });
     }
 
     // Channel 4: state projection chain (direct hit), time-aware.
@@ -1050,13 +1221,20 @@ std::vector<SearchResult> Store::search(const QueryPlan& plan,
                                                  plan.predicate_hint);
         if (proj && proj->active_cell) {
             // Walk the chain from the active cell back to the root, keeping
-            // only members the agent had observed by query time.
+            // only members the agent had observed by query time. Forgotten
+            // and disputed cells are never evidence, even via projection.
+            // Cycle + depth guarded (corrupt-journal safety).
             std::vector<std::pair<uint64_t, float>> chain;
             uint64_t cur = proj->active_cell;
-            while (cur) {
+            std::unordered_set<uint64_t> chain_seen;
+            for (int depth = 0;
+                 depth < kMaxChainDepth && cur && chain_seen.insert(cur).second;
+                 ++depth) {
                 const MemoryCell* c = cell(cur);
                 if (!c) break;
-                if (c->observed_at <= at) {
+                if (c->observed_at <= at &&
+                    c->status != CellStatus::Forgotten &&
+                    c->status != CellStatus::Disputed) {
                     chain.emplace_back(c->id, 0.0f);
                 }
                 if (c->parent_id == 0) break;
@@ -1123,11 +1301,18 @@ std::vector<SearchResult> Store::search(const QueryPlan& plan,
         scored.emplace_back(cid, score);
     }
     std::sort(scored.begin(), scored.end(),
-              [](const auto& a, const auto& b) { return a.second > b.second; });
+              [](const auto& a, const auto& b) {
+                  if (a.second != b.second) return a.second > b.second;
+                  return a.first < b.first;  // deterministic, id tie-break
+              });
 
     for (const auto& [cid, score] : scored) {
         const MemoryCell* c = cell(cid);
         if (!c) continue;
+        // Forgotten/disputed cells are never evidence, even via projection.
+        if (c->status == CellStatus::Forgotten ||
+            c->status == CellStatus::Disputed)
+            continue;
         // Current mode must never surface a stale version — unless that cell
         // is the projection's truth-at-`at` (the newest member the agent had
         // observed by query time, which may still be a superseded cell when a
@@ -1154,6 +1339,7 @@ std::vector<SearchResult> Store::search(const QueryPlan& plan,
         r.confidence = c->confidence;
         r.salience = c->salience;
         r.access_heat = c->access_heat;
+        r.observed_at = c->observed_at;
         r.valid_from = c->valid_from;
         r.valid_until = c->valid_until;
         r.root_id = c->root_id;
@@ -1188,7 +1374,19 @@ EvidencePack Store::pack(const std::vector<SearchResult>& ranked,
         const size_t tok = r.text.size() / 4 + 1 + 8;  // ~8 header tokens
         if (budget_left < tok) {
             if (out.items.empty()) {
-                continue;  // always allow at least the single best cell
+                // Always allow at least the single best cell, even when it
+                // exceeds the budget: an over-budget answer beats silence,
+                // and the tokens field honestly reports the overrun.
+                EvidenceItem item;
+                item.cell = r;
+                item.covers_current = r.projection_hit && need_current;
+                item.covers_historical =
+                    (r.status == CellStatus::Superseded ||
+                     r.status == CellStatus::Expired) &&
+                    need_historical;
+                item.covers_relation = need_relation;
+                out.items.push_back(std::move(item));
+                out.tokens += tok;
             }
             break;
         }
@@ -1232,6 +1430,7 @@ EvidencePack Store::pack(const std::vector<SearchResult>& ranked,
 }
 
 ProfileResult Store::profile(Timestamp at_time, uint32_t top_k) const {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
     ProfileResult out;
     for (const auto& c : cells_) {
         if (c.container != container_ || !c.active_at(at_time)) continue;
@@ -1245,6 +1444,8 @@ ProfileResult Store::profile(Timestamp at_time, uint32_t top_k) const {
         r.status = c.status;
         r.confidence = c.confidence;
         r.salience = c.salience;
+        r.access_heat = c.access_heat;
+        r.observed_at = c.observed_at;
         r.valid_from = c.valid_from;
         r.valid_until = c.valid_until;
         r.root_id = c.root_id;
@@ -1255,69 +1456,127 @@ ProfileResult Store::profile(Timestamp at_time, uint32_t top_k) const {
             r.score = c.confidence + c.salience;
             out.static_facts.push_back(std::move(r));
         } else {
-            r.score = static_cast<float>(c.observed_at);
+            // float(observed_at) collapses ordering: 1.7e12 ms >> 2^24, so
+            // every recent cell rounds to the same float. Score assigned
+            // after the int64-exact observed_at sort below.
+            r.score = 0.0f;
             out.dynamic_facts.push_back(std::move(r));
         }
     }
-    const auto desc = [](const SearchResult& a, const SearchResult& b) {
-        return a.score > b.score;
+    const auto desc_static = [](const SearchResult& a, const SearchResult& b) {
+        if (a.score != b.score) return a.score > b.score;
+        return a.cell_id < b.cell_id;
     };
-    std::sort(out.static_facts.begin(), out.static_facts.end(), desc);
-    std::sort(out.dynamic_facts.begin(), out.dynamic_facts.end(), desc);
+    std::sort(out.static_facts.begin(), out.static_facts.end(), desc_static);
     if (out.static_facts.size() > top_k) out.static_facts.resize(top_k);
-    if (out.dynamic_facts.size() > top_k) out.dynamic_facts.resize(top_k);
+    if (out.dynamic_facts.size() > top_k) {
+        std::nth_element(
+            out.dynamic_facts.begin(),
+            out.dynamic_facts.begin() + top_k, out.dynamic_facts.end(),
+            [](const SearchResult& a, const SearchResult& b) {
+                if (a.observed_at != b.observed_at)
+                    return a.observed_at > b.observed_at;
+                return a.cell_id < b.cell_id;
+            });
+        out.dynamic_facts.resize(top_k);
+    }
+    std::sort(out.dynamic_facts.begin(), out.dynamic_facts.end(),
+              [](const SearchResult& a, const SearchResult& b) {
+                  if (a.observed_at != b.observed_at)
+                      return a.observed_at > b.observed_at;
+                  return a.cell_id < b.cell_id;
+              });
+    // Dynamic scores: rank-based, newest = highest (deterministic).
+    for (size_t i = 0; i < out.dynamic_facts.size(); ++i) {
+        out.dynamic_facts[i].score =
+            static_cast<float>(out.dynamic_facts.size() - i);
+    }
     return out;
 }
 
 // --- persistence -----------------------------------------------------------
 
 void Store::save(const std::string& path) const {
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out) throw std::runtime_error("cannot open journal for write: " + path);
+    std::lock_guard<std::recursive_mutex> lock(mu_);
+    // Atomic durable write: stream to tmp + fsync + rename. A crash mid-save
+    // must never leave a truncated journal behind (the old code opened with
+    // trunc directly on the live path).
+    const std::string tmp = path + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out)
+            throw std::runtime_error("cannot open journal for write: " + path);
 
-    const auto emit = [&](u8 rec_type, const std::string& payload) {
-        std::string header;
-        put_u32(header, kJournalMagic);
-        put_u32(header, static_cast<u32>(payload.size()));
-        const u32 crc = Crc32::of(payload.data(), payload.size());
-        put_u32(header, crc);
-        header.push_back(static_cast<char>(rec_type));
-        out.write(header.data(), static_cast<std::streamsize>(header.size()));
-        out.write(payload.data(), static_cast<std::streamsize>(payload.size()));
-    };
+        const auto emit = [&](u8 rec_type, const std::string& payload) {
+            std::string header;
+            put_u32(header, kJournalMagic);
+            put_u32(header, static_cast<u32>(payload.size()));
+            // CRC covers rec_type + payload: a flipped type byte with an
+            // intact payload must fail validation, not deserialize as the
+            // wrong record (both cell and episode records start u64,u64).
+            std::string crc_buf;
+            crc_buf.push_back(static_cast<char>(rec_type));
+            crc_buf.append(payload);
+            const u32 crc = Crc32::of(crc_buf.data(), crc_buf.size());
+            put_u32(header, crc);
+            header.push_back(static_cast<char>(rec_type));
+            out.write(header.data(),
+                      static_cast<std::streamsize>(header.size()));
+            out.write(payload.data(),
+                      static_cast<std::streamsize>(payload.size()));
+        };
 
-    for (const auto& e : episodes_) emit(kRecEpisode, serialize_episode(e));
-    for (const auto& c : cells_) emit(kRecCell, serialize_cell(c));
-    for (const auto& p : projections_)
-        emit(kRecProjection, serialize_projection(p));
-    for (const auto& e : edges_) emit(kRecEdge, serialize_edge(e));
-    for (const auto& en : entities_) emit(kRecEntity, serialize_entity(en));
-    for (uint64_t cid : vectors_.ids()) {
-        const std::vector<float>* vec = vectors_.vector_of(cid);
-        if (vec) emit(kRecEmbedding, serialize_embedding(cid, *vec));
+        for (const auto& e : episodes_) emit(kRecEpisode, serialize_episode(e));
+        for (const auto& c : cells_) emit(kRecCell, serialize_cell(c));
+        for (const auto& p : projections_)
+            emit(kRecProjection, serialize_projection(p));
+        for (const auto& e : edges_) emit(kRecEdge, serialize_edge(e));
+        for (const auto& en : entities_) emit(kRecEntity, serialize_entity(en));
+        for (uint64_t cid : vectors_.ids()) {
+            const std::vector<float>* vec = vectors_.vector_of(cid);
+            if (vec) emit(kRecEmbedding, serialize_embedding(cid, *vec));
+        }
+        out.flush();
+        if (!out) {
+            out.close();
+            std::remove(tmp.c_str());
+            throw std::runtime_error("failed writing journal: " + path);
+        }
+        out.close();
     }
-    out.flush();
-    if (!out) throw std::runtime_error("failed writing journal: " + path);
+    if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+        std::remove(tmp.c_str());
+        throw std::runtime_error("failed committing journal: " + path);
+    }
 }
 
 void Store::load(const std::string& path) {
+    std::lock_guard<std::recursive_mutex> lock(mu_);
     std::ifstream in(path, std::ios::binary | std::ios::ate);
     if (!in) throw std::runtime_error("cannot open journal for read: " + path);
     const std::streamsize size = in.tellg();
+    if (size < 0) throw std::runtime_error("cannot stat journal: " + path);
+    // 256MB cap: a journal larger than this is either corrupt (garbage len)
+    // or far beyond single-user scale; refuse before the huge allocation.
+    constexpr std::streamsize kMaxJournal = 256LL * 1024 * 1024;
+    if (size > kMaxJournal)
+        throw std::runtime_error("journal too large, refusing load: " + path);
     in.seekg(0, std::ios::beg);
     std::vector<u8> buf(static_cast<size_t>(size));
-    in.read(reinterpret_cast<char*>(buf.data()), size);
-    if (!in) throw std::runtime_error("failed reading journal: " + path);
+    if (size > 0) {
+        in.read(reinterpret_cast<char*>(buf.data()), size);
+        if (!in) throw std::runtime_error("failed reading journal: " + path);
+    }
 
-    cells_.clear();
-    edges_.clear();
-    entities_.clear();
-    episodes_.clear();
-    projections_.clear();
-    entity_to_cells_.clear();
-    tag_to_cells_.clear();
-    content_hash_to_cell_.clear();
-    id_counter_ = 1;
+    // Parse into temporaries first: a corrupt record must not destroy the
+    // live store (old code cleared state, then threw, losing good memory).
+    std::vector<MemoryCell> t_cells;
+    std::vector<Edge> t_edges;
+    std::vector<Entity> t_entities;
+    std::vector<Episode> t_episodes;
+    std::vector<StateProjection> t_projs;
+    std::vector<std::pair<uint64_t, std::vector<float>>> t_embeds;
+    uint64_t t_id_counter = 1;
 
     size_t pos = 0;
     while (pos + 13 <= buf.size()) {
@@ -1328,61 +1587,114 @@ void Store::load(const std::string& path) {
         std::memcpy(&len, rec + 4, 4);
         std::memcpy(&crc, rec + 8, 4);
         rec_type = rec[12];
-        if (magic != kJournalMagic || pos + 13 + len > buf.size()) {
+        // 16MB per-record cap before trusting len (corrupt length field).
+        constexpr u32 kMaxRecord = 16u * 1024 * 1024;
+        if (magic != kJournalMagic || len > kMaxRecord ||
+            pos + 13 + static_cast<size_t>(len) > buf.size()) {
             throw std::runtime_error("corrupt journal record");
         }
         const u8* payload = rec + 13;
-        if (Crc32::of(payload, len) != crc) {
+        std::string crc_buf;
+        crc_buf.push_back(static_cast<char>(rec_type));
+        crc_buf.append(reinterpret_cast<const char*>(payload), len);
+        const bool crc_new =
+            Crc32::of(crc_buf.data(), crc_buf.size()) == crc;
+        // Backward compat: journals written before the CRC-type fix cover
+        // payload only. Accept them (migrate on next save); new writes use
+        // the type-covered CRC above.
+        const bool crc_old =
+            !crc_new && Crc32::of(payload, len) == crc;
+        if (!crc_new && !crc_old) {
             throw std::runtime_error("journal checksum mismatch");
         }
         if (rec_type == kRecEpisode) {
             Episode e;
             if (!deserialize_episode(payload, len, e))
                 throw std::runtime_error("bad episode record");
-            if (e.id >= id_counter_) id_counter_ = e.id + 1;
-            episodes_.push_back(std::move(e));
+            if (e.id >= t_id_counter) t_id_counter = e.id + 1;
+            t_episodes.push_back(std::move(e));
         } else if (rec_type == kRecCell) {
             MemoryCell c;
             if (!deserialize_cell(payload, len, c))
                 throw std::runtime_error("bad cell record");
-            if (c.id >= id_counter_) id_counter_ = c.id + 1;
-            cells_.push_back(std::move(c));
+            // Enum range validation: crafted journals must not inject
+            // kind=255 (UB shift) or unknown statuses into the store.
+            if (!is_valid_kind(static_cast<uint8_t>(c.kind)) ||
+                !is_valid_status(static_cast<uint8_t>(c.status)))
+                throw std::runtime_error("bad cell record: invalid enum");
+            if (c.id >= t_id_counter) t_id_counter = c.id + 1;
+            t_cells.push_back(std::move(c));
         } else if (rec_type == kRecProjection) {
             StateProjection p;
             if (!deserialize_projection(payload, len, p))
                 throw std::runtime_error("bad projection record");
-            projections_.push_back(std::move(p));
+            t_projs.push_back(std::move(p));
         } else if (rec_type == kRecEdge) {
             Edge e;
             if (!deserialize_edge(payload, len, e))
                 throw std::runtime_error("bad edge record");
-            if (e.id >= id_counter_) id_counter_ = e.id + 1;
-            edges_.push_back(std::move(e));
+            if (!is_valid_edge(static_cast<uint8_t>(e.type)))
+                throw std::runtime_error("bad edge record: invalid type");
+            if (e.id >= t_id_counter) t_id_counter = e.id + 1;
+            t_edges.push_back(std::move(e));
         } else if (rec_type == kRecEntity) {
             Entity en;
             if (!deserialize_entity(payload, len, en))
                 throw std::runtime_error("bad entity record");
-            if (en.id >= id_counter_) id_counter_ = en.id + 1;
-            entities_.push_back(std::move(en));
+            if (en.id >= t_id_counter) t_id_counter = en.id + 1;
+            t_entities.push_back(std::move(en));
         } else if (rec_type == kRecEmbedding) {
             u64 cell_id;
             std::vector<float> vec;
             if (!deserialize_embedding(payload, len, cell_id, vec))
                 throw std::runtime_error("bad embedding record");
-            vectors_.add(cell_id, vec);
+            t_embeds.emplace_back(cell_id, std::move(vec));
         } else {
             throw std::runtime_error("unknown journal record type");
         }
         pos += 13 + len;
     }
+    if (pos != buf.size()) {
+        // Trailing 1-12 bytes can never form a record: truncated write.
+        throw std::runtime_error("journal has trailing bytes (truncated?)");
+    }
+
+    // Commit: swap in the parsed state. Old-format journals (payload-only
+    // CRC) load transparently and are re-saved in the new format on the next
+    // persist — no user data loss across the upgrade.
+    cells_ = std::move(t_cells);
+    edges_ = std::move(t_edges);
+    entities_ = std::move(t_entities);
+    episodes_ = std::move(t_episodes);
+    projections_ = std::move(t_projs);
+    entity_to_cells_.clear();
+    tag_to_cells_.clear();
+    content_hash_to_cell_.clear();
+    id_to_index_.clear();
+    entity_name_to_id_.clear();
+    entity_id_to_name_.clear();
+    bm25_ = Bm25Index{};
+    vectors_ = VectorIndex{};
+    id_counter_ = t_id_counter;
 
     // Rebuild derived indexes.
-    for (const auto& c : cells_) {
+    for (size_t i = 0; i < cells_.size(); ++i) {
+        const auto& c = cells_[i];
+        id_to_index_[c.id] = i;
         if (c.container != container_) continue;
         index_cell(c);
         for (uint64_t eid : c.entity_ids) {
             entity_to_cells_[eid].push_back(c.id);
         }
+    }
+    for (const auto& e : entities_) {
+        entity_name_to_id_[lower(e.name)] = e.id;
+        entity_id_to_name_[e.id] = e.name;
+    }
+    for (auto& [cid, vec] : t_embeds) {
+        // Embeddings for unknown cells (foreign container) are dropped;
+        // dim mismatches are rejected by VectorIndex::add.
+        if (id_to_index_.count(cid)) vectors_.add(cid, vec);
     }
 }
 
