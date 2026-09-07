@@ -46,6 +46,74 @@ Verify the install:
 ./scripts/verify.sh   # pytest + ruff (C++ suite: see below)
 ```
 
+## One-command benchmark (any machine, any OS)
+
+One command downloads datasets, installs everything, and runs every
+benchmark **serially with the same model**, streaming progress live and
+writing a portable Markdown report. Windows, macOS, Linux — only git and
+Python 3.11+ required:
+
+```bash
+# Linux / macOS
+git clone https://github.com/RaghavapriyanSaravanapriyan/contextmemory.git \
+  && cd contextmemory \
+  && python3 scripts/cmbench.py --model qwen3:4b
+```
+
+```powershell
+# Windows (PowerShell)
+git clone https://github.com/RaghavapriyanSaravanapriyan/contextmemory.git;
+  cd contextmemory; py scripts/cmbench.py --model qwen3:4b
+```
+
+```bash
+# The full gauntlet: every suite, head-to-head lineup, judge on
+python scripts/cmbench.py --model qwen3:4b \
+  --suites all --systems contextmemory,full-history \
+  --n 30 --judge --yes
+```
+
+What the command does (5 phases, all visible live):
+
+1. **ENV** — installs ContextMemory incl. the C++ core build.
+2. **MODEL** — probes your reader (Ollama default), pulls `--model` on request.
+3. **DATA** — fetches official datasets with progress (LongMemEval
+   oracle/S, LoCoMo, BEAM-100K; skipped when already present).
+4. **RUN** — `dims → bench → longmemeval → locomo → beam`, every system on
+   the same model, stdout streamed in real time, per-suite logs tee'd.
+5. **REPORT** — `reports/runs/cmbench-<ts>/` with `REPORT.md` (paste it into
+   a PR), `summary.json`, and per-suite logs.
+
+| Flag | Job |
+| --- | --- |
+| `--model / --base-url / --api-key` | the one reader for ALL systems |
+| `--systems` | lineup, e.g. `contextmemory,full-history,recency-2` |
+| `--suites` | `dims,bench,longmemeval,locomo,beam` or `all` |
+| `--n / --locomo-convos / --beam-convos` | subset sizes (default 30 / 0,1 / 0,1) |
+| `--judge` | official-style LLM judge for LongMemEval |
+| `--timeout / --keep-going` | per-suite timeout, don't stop on failure |
+| `--with-supermemory` | clone supermemory for reference; adds it to the lineup when `SUPERMEMORY_API_KEY` is set (no key = cleanly skipped, never faked) |
+| `--check` | install + probe + datasets only, run nothing |
+
+`REPORT.md` looks like this (portable, checkable):
+
+```markdown
+# cmbench report
+**PASS** · 2026-09-08 05:20 UTC · model `qwen3:4b` · systems `contextmemory,full-history`
+
+| Suite       | Status | Time (s) | Result                    |
+|---|---|---|---|
+| bench       | ok     | 0.1      | ingest p50 0.043 ms; answer p50 0.223 ms |
+| longmemeval | ok     | 412.0    | contextmemory: det 0.500  |
+...
+```
+
+Metrics glossary: **det** = deterministic containment score (cheap lane);
+**judge** = official-prompt LLM score (publish lane); **p50/p95** =
+retrieval latency without any model; **tokens** = evidence packed per
+query. Caveats travel with the report: same rig + same model or the
+numbers mean nothing.
+
 ## Use it in 60 seconds
 
 ```bash
