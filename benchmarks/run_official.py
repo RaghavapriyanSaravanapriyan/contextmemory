@@ -243,6 +243,22 @@ def make_reader(num_ctx: int = 2048) -> OllamaChatClient:
     return r
 
 
+def _preflight(reader, model: str = MODEL, base_url: str = BASE_URL) -> None:
+    """Ping the reader before a costly official run (fail fast, no traceback)."""
+    try:
+        reader.complete([{"role": "user", "content": "ping"}],
+                        temperature=0.0, max_tokens=8)
+    except Exception as exc:
+        raise SystemExit(
+            f"reader unreachable: model={model!r} base={base_url}\n"
+            f"  cause: {exc}\n"
+            f"  fix local:  ollama serve  # new terminal\n"
+            f"              ollama pull {model}\n"
+            f"  fix hosted: edit BASE_URL/MODEL in benchmarks/run_official.py "
+            f"or set OPENAI_API_KEY"
+        ) from exc
+
+
 def ckpt(path: Path, obj: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8") as fh:
@@ -252,6 +268,7 @@ def ckpt(path: Path, obj: dict) -> None:
 def cmd_beam(args: argparse.Namespace) -> int:
     bucket = f"benchmarks/data/beam/data/{args.bucket}-00000-of-00001.parquet"
     reader = make_reader()
+    _preflight(reader)
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     out = RESULTS / f"beam100k_{ts}.jsonl"
     systems = args.systems
@@ -320,6 +337,7 @@ def cmd_longmemeval(args: argparse.Namespace) -> int:
     print(f"{len(subset)} instances", flush=True)
 
     reader = make_reader(num_ctx=8192)
+    _preflight(reader)
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     out = RESULTS / f"longmemeval_{ts}.json"
 
@@ -379,6 +397,7 @@ def cmd_locomo(args: argparse.Namespace) -> int:
         data = json.load(fh)
     # num_ctx 12K so the full-history baseline sees the whole ~9K-token convo.
     reader = make_reader(num_ctx=12288)
+    _preflight(reader)
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     out = RESULTS / f"locomo_{ts}.jsonl"
     summary: dict = {}

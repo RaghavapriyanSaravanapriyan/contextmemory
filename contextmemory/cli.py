@@ -137,6 +137,27 @@ def _print_report(
         print(f"  {qtype}: {per_type[qtype]:.4f} ({counts[qtype]})")
 
 
+def _preflight_reader(reader, model: str, base_url: str) -> None:
+    """Ping the reader before a costly run (fail fast, no traceback).
+
+    A dead endpoint otherwise surfaces 19s+ later as a raw httpx
+    ConnectError deep inside the replay. Ping once here and exit with the
+    exact remediation instead.
+    """
+    try:
+        reader.complete([{"role": "user", "content": "ping"}],
+                        temperature=0.0)
+    except Exception as exc:
+        raise SystemExit(
+            f"reader unreachable: model={model!r} base={base_url}\n"
+            f"  cause: {exc}\n"
+            f"  fix local:  ollama serve  # new terminal\n"
+            f"              ollama pull {model}\n"
+            f"  fix hosted: pass --reader-api-base + --reader-api-key, "
+            f"or set OPENAI_API_KEY"
+        ) from exc
+
+
 def _cmd_eval(args: argparse.Namespace) -> int:
     instances = load_longmemeval(args.data)
     if args.max_instances:
@@ -145,6 +166,7 @@ def _cmd_eval(args: argparse.Namespace) -> int:
     reader = make_reader(
         args.reader_api_base, args.reader_api_key, args.reader_model
     )
+    _preflight_reader(reader, args.reader_model, args.reader_api_base)
     factory = lambda: _SYSTEMS[args.system](reader)  # noqa: E731
     results = replay(instances, factory)
     report = score_deterministic(results)
@@ -180,6 +202,7 @@ def _cmd_dims(args: argparse.Namespace) -> int:
     reader = make_reader(
         args.reader_api_base, args.reader_api_key, args.reader_model
     )
+    _preflight_reader(reader, args.reader_model, args.reader_api_base)
     factory = lambda: _SYSTEMS[args.system](reader)  # noqa: E731
     reports = run_dimensions(default_scenarios(), factory)
     print(f"system:        {args.system}")

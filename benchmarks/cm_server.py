@@ -32,7 +32,7 @@ import json
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
@@ -77,7 +77,7 @@ def build_client(container_tag: str, *, extractor, journal_dir: str) -> MemoryCl
 def _parse_timestamp(value) -> datetime:
     """Best-effort ISO timestamp; falls back to the ingest time."""
     if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(value, tz=timezone.utc)
+        return datetime.fromtimestamp(value, tz=UTC)
     if isinstance(value, str) and value:
         try:
             return datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -91,7 +91,6 @@ def run_job(job_id: str) -> None:
     with _JOBS_LOCK:
         job = _JOBS[job_id]
         space_id = job["space_id"]
-        container_tag = job["container_tag"]
         body = job["body"]
         client = job["client"]
 

@@ -46,6 +46,37 @@ def test_order_systems(cm) -> None:
         "contextmemory", "supermemory", "full-history"]
 
 
+def test_split_runnable_suites(cm) -> None:
+    kept, dropped = cm.split_runnable_suites(
+        ["dims", "bench", "longmemeval"], True)
+    assert (kept, dropped) == (["dims", "bench", "longmemeval"], [])
+    kept, dropped = cm.split_runnable_suites(
+        ["dims", "bench", "locomo"], False)
+    assert kept == ["bench"] and dropped == ["dims", "locomo"]
+    kept, dropped = cm.split_runnable_suites(["dims"], False)
+    assert kept == [] and dropped == ["dims"]  # caller exits 2 with the fix
+
+
+def test_preflight_reader_fails_cleanly() -> None:
+    from contextmemory.cli import _preflight_reader
+
+    class _Dead:
+        def complete(self, messages, temperature=0.0):
+            raise ConnectionError("refused")
+
+    import pytest as _pt
+    with _pt.raises(SystemExit) as ei:
+        _preflight_reader(_Dead(), "qwen3:4b", "http://localhost:11434")
+    msg = str(ei.value.code)
+    assert "ollama serve" in msg and "ollama pull qwen3:4b" in msg
+
+
+def test_preflight_reader_passes(fake_reader) -> None:
+    from contextmemory.cli import _preflight_reader
+
+    assert _preflight_reader(fake_reader, "m", "u") is None
+
+
 def test_parse_args_all_and_rejects_unknown(cm) -> None:
     args = cm.parse_args(["--suites", "all"])
     assert args.suites == ["dims", "bench", "longmemeval", "locomo", "beam"]

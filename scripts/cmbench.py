@@ -215,17 +215,50 @@ def ollama_models(base_url: str) -> list[str] | None:
         return None
 
 
-def phase_model(args: argparse.Namespace) -> None:
+LLM_SUITES = ("dims", "longmemeval", "locomo", "beam")
+
+
+def split_runnable_suites(suites: list[str],
+                          reader_ok: bool) -> tuple[list[str], list[str]]:
+    """Keep model-free suites when no reader is reachable.
+
+    `bench` uses a null reader (pure latency, no model). Everything else
+    needs a live model. Dropping — not crashing — is the Apple behavior:
+    the user still gets signal, plus the exact fix.
+    """
+    if reader_ok:
+        return list(suites), []
+    kept = [s for s in suites if s not in LLM_SUITES]
+    dropped = [s for s in suites if s in LLM_SUITES]
+    return kept, dropped
+
+
+READER_FIX = (
+    "no reader model reachable.\n"
+    "  fix local:  ollama serve  # new terminal, default port 11434\n"
+    "              ollama pull {model}  # then re-run\n"
+    "  fix hosted: pass --base-url + --api-key (or set OPENAI_API_KEY)\n"
+    "  model-free: --suites bench  # deterministic latency, no model needed"
+)
+
+
+def phase_model(args: argparse.Namespace) -> bool:
     log("== phase 2/5: model ==")
     names = ollama_models(args.base_url)
     if names is None:
-        log(f"no Ollama at {args.base_url} — using OpenAI-compatible reader")
-        log("set --api-key or OPENAI_API_KEY for hosted endpoints")
-        return
+        if args.api_key and args.api_key != "EMPTY":
+            log("using OpenAI-compatible reader "
+                f"(key set, base {args.base_url})")
+            return True
+        log("no Ollama at " + args.base_url + " (default port 11434) "
+            "and no --api-key.")
+        log("LLM suites will be skipped; model-free suites still run.\n"
+            + READER_FIX.format(model=args.model))
+        return False
     log(f"Ollama reachable ({len(names)} models): " + ", ".join(names[:8]))
     if args.model in names:
         log(f"model ready: {args.model}")
-        return
+        return True
     log(f"model {args.model!r} not pulled.")
     if args.pull or (args.yes is False and sys.stdin.isatty()
                      and input(f"ollama pull {args.model}? [Y/n]: "
@@ -235,6 +268,7 @@ def phase_model(args: argparse.Namespace) -> None:
             sys.exit(f"ollama pull {args.model} failed")
     elif not args.pull and args.yes:
         sys.exit(f"model {args.model!r} missing — pull it or pass --pull")
+    return True
 
 
 def phase_data(root: Path, suites: list[str]) -> None:
@@ -242,7 +276,11 @@ def phase_data(root: Path, suites: list[str]) -> None:
     needed: list[str] = []
     for s in suites:
         needed.extend(SUITE_NEEDS.get(s, []))
-    for rel in dict.fromkeys(needed):
+    needed = list(dict.fromkeys(needed))
+    if not needed:
+        log("no downloads needed (synthetic suites run in-process)")
+        return
+    for rel in needed:
         dest = root / rel
         if dest.exists() and dest.stat().st_size > 0:
             log(f"have {rel}")
@@ -445,18 +483,20 @@ def dataset_provenance(root: Path, suites: list[str]) -> list[tuple[str, str, st
 def render_markdown(root: Path, outdir: Path, results: dict[str, dict],
                     args: argparse.Namespace, started: str,
                     readiness: list[tuple[str, str, str]],
-                    judge_note: str) -> str:
+                    judge_note: str,
+                    dropped: list[str] | None = None) -> str:
     """Portable Markdown report: the artifact you paste into a PR or issue."""
     import platform as _plat
 
     ok = all(r["exit"] == 0 for r in results.values())
     order = ", ".join(order_systems(
         [s.strip() for s in args.systems.split(",")]))
+    skip_note = (" · skipped: " + ",".join(dropped)) if dropped else ""
     lines = [
         "# cmbench report",
         "",
         f"**{'PASS' if ok else 'FAIL'}** · {started} · "
-        f"model `{args.model}` · run order `{order}`",
+        f"model `{args.model}` · run order `{order}`{skip_note}",
         "",
         "## Rig",
         "",
@@ -566,13 +606,16 @@ def _read_log(outdir: Path, suite: str) -> str:
 
 def phase_report(root: Path, outdir: Path, results: dict,
                  args: argparse.Namespace, started: str,
-                 readiness: list[tuple[str, str, str]]) -> None:
+                 readiness: list[tuple[str, str, str]],
+                 dropped: list[str] | None = None) -> None:
     log("== phase 5/5: report ==")
+    dropped = dropped or []
     judge_note = (f"{args.model} (reader-as-judge)" if args.judge
                   else "deterministic-only (no LLM judge)")
     report = {
         "model": args.model, "base_url": args.base_url,
         "systems": args.systems, "suites": list(results),
+        "skipped_suites": dropped,
         "started_utc": started, "judge": judge_note,
         "third_party": [{"system": s, "status": st, "detail": d}
                         for s, st, d in readiness],
@@ -580,7 +623,7 @@ def phase_report(root: Path, outdir: Path, results: dict,
     }
     (outdir / "summary.json").write_text(json.dumps(report, indent=1))
     md = render_markdown(root, outdir, results, args, started, readiness,
-                         judge_note)
+                         judge_note, dropped)
     (outdir / "REPORT.md").write_text(md, encoding="utf-8")
     print()
     print("=" * 64)
@@ -730,7 +773,7 @@ def main(argv: list[str] | None = None) -> int:
     outdir.mkdir(parents=True, exist_ok=True)
 
     phase_env(root, args.yes)
-    phase_model(args)
+    reader_ok = phase_model(args)
     readiness = maybe_supermemory(root, args)
     # Fail fast on typos for the built-in suites: an unknown name must
     # never silently become somebody else's numbers.
@@ -739,6 +782,15 @@ def main(argv: list[str] | None = None) -> int:
         if bad:
             sys.exit(f"unknown system(s) {bad} for dims/bench "
                      f"(known: {sorted(LOCAL_SYSTEMS)})")
+    # No reader, no LLM suites: run what is runnable (bench), or exit
+    # with the fix instead of a 19s traceback.
+    args.suites, dropped = split_runnable_suites(args.suites, reader_ok)
+    if dropped:
+        log(f"skipped (no reader): {','.join(dropped)}")
+    if not args.suites:
+        err("nothing runnable: every requested suite needs a reader model.")
+        err(READER_FIX.format(model=args.model))
+        return 2
     if "beam" in args.suites and not ensure_pandas(root, args.yes):
         log("pandas declined — dropping beam suite")
         args.suites = [s for s in args.suites if s != "beam"]
@@ -749,7 +801,7 @@ def main(argv: list[str] | None = None) -> int:
             log(f"third-party {name}: {status} ({detail})")
         return 0
     results = phase_run(args, root, outdir, args.suites, args.systems_list)
-    phase_report(root, outdir, results, args, started, readiness)
+    phase_report(root, outdir, results, args, started, readiness, dropped)
     return 0 if all(r["exit"] == 0 for r in results.values()) else 1
 
 

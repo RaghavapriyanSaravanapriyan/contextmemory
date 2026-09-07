@@ -54,12 +54,16 @@ class Handler(BaseHTTPRequestHandler):
             return
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length) or b"{}")
-        print(f"[proxy] req model={body.get('model')} stream={body.get('stream')} "
-              f"msgs={len(body.get('messages', []))} prompt={len(body.get('messages', [{}])[0].get('content', ''))} chars", flush=True)
+        first_msg = (body.get("messages", [{}]) or [{}])[0]
+        log_line = (
+            f"[proxy] req model={body.get('model')} "
+            f"stream={body.get('stream')} "
+            f"msgs={len(body.get('messages', []))} "
+            f"prompt={len(first_msg.get('content', ''))} chars"
+        )
+        print(log_line, flush=True)
         model = body.get("model", "qwen3:4b")
         messages = body.get("messages", [])
-        temperature = body.get("temperature", 0.0)
-        max_tokens = body.get("max_tokens")
         want_stream = bool(body.get("stream", False))
 
         payload = dict(body)
@@ -72,7 +76,8 @@ class Handler(BaseHTTPRequestHandler):
             self._open_stream(model)
 
         t0 = time.time()
-        print(f"[proxy] forwarding to {OLLAMA_URL}/v1/chat/completions stream=false", flush=True)
+        print(f"[proxy] forwarding to {OLLAMA_URL}/v1/chat/completions "
+              f"stream=false", flush=True)
         req = urllib.request.Request(
             OLLAMA_URL + "/v1/chat/completions",
             data=json.dumps(payload).encode(),
@@ -83,16 +88,20 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(resp.read())
         except urllib.error.HTTPError as exc:
             print(f"[proxy] upstream HTTP {exc.code}", flush=True)
-            self._json(exc.code, {"error": {"message": exc.read().decode(errors="replace")[:500]}})
+            self._json(exc.code, {"error": {"message": exc.read().decode(
+                errors="replace")[:500]}})
             return
         except Exception as exc:  # noqa: BLE001
             print(f"[proxy] upstream error: {exc}", flush=True)
             self._json(502, {"error": {"message": str(exc)}})
             return
-        print(f"[proxy] upstream done in {round(time.time()-t0,1)}s", flush=True)
+        print(f"[proxy] upstream done in {round(time.time() - t0, 1)}s",
+              flush=True)
 
-        content = (data.get("choices") or [{}])[0].get("message", {}).get("content") or ""
-        reasoning = (data.get("choices") or [{}])[0].get("message", {}).get("reasoning") or ""
+        first_choice = (data.get("choices") or [{}])[0]
+        first_msg = first_choice.get("message", {}) or {}
+        content = first_msg.get("content") or ""
+        reasoning = first_msg.get("reasoning") or ""
         latency = round((time.time() - t0) * 1000)
 
         if want_stream:

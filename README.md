@@ -73,9 +73,10 @@ git clone https://github.com/RaghavapriyanSaravanapriyan/contextmemory.git \
 ```
 
 ```powershell
-# Windows (PowerShell)
+# Windows (PowerShell) — use `python`, not `py`
+# (the Microsoft Store `py` shim fails on fresh installs)
 git clone https://github.com/RaghavapriyanSaravanapriyan/contextmemory.git;
-  cd contextmemory; py scripts/cmbench.py --model qwen3:4b --with-supermemory
+  cd contextmemory; python scripts/cmbench.py --model qwen3:4b --with-supermemory
 ```
 
 ```bash
