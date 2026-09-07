@@ -228,6 +228,76 @@ def ollama_models(base_url: str) -> list[str] | None:
         return None
 
 
+def ensure_ollama_up(root: Path, base_url: str,
+                     timeout_s: float = 60.0) -> bool:
+    """One-shot Ollama: start `ollama serve` detached if the port is dead.
+
+    Returns True when /api/tags answers. The server is intentionally left
+    running (it is a service; PID + stop command are logged). Only acts on
+    the DEFAULT local URL — hosted bases are never auto-started.
+    """
+    if ollama_models(base_url) is not None:
+        return True
+    if base_url.rstrip("/") != "http://localhost:11434":
+        return False
+    if shutil.which("ollama") is None:
+        err("no `ollama` binary found — install it from ollama.com, then re-run")
+        return False
+    log("Ollama is down — starting `ollama serve` in the background…")
+    try:
+        if sys.platform == "win32":
+            proc = subprocess.Popen(
+                ["ollama", "serve"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=subprocess.DETACHED_PROCESS
+                | subprocess.CREATE_NEW_PROCESS_GROUP,
+                cwd=str(root))
+        else:
+            proc = subprocess.Popen(
+                ["ollama", "serve"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True, cwd=str(root))
+    except OSError as exc:
+        err(f"could not launch ollama: {exc}")
+        return False
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if ollama_models(base_url) is not None:
+            log(f"`ollama serve` is up (pid {proc.pid}; stop later with "
+                f"`kill {proc.pid}`)")
+            return True
+        time.sleep(2.0)
+    err(f"`ollama serve` did not answer within {timeout_s:.0f}s")
+    return False
+
+
+def ensure_model_pulled(root: Path, args: argparse.Namespace,
+                        names: list[str]) -> bool:
+    """One-shot model fetch: `ollama pull` when the model is missing.
+
+    The user asked for one-shot: a missing model downloads automatically.
+    `--no-pull` opts out (metered connections); then we exit with the fix.
+    """
+    if args.model in names:
+        log(f"model ready: {args.model}")
+        return True
+    if args.no_pull:
+        sys.exit(f"model {args.model!r} not pulled and --no-pull was passed. "
+                 f"Run: ollama pull {args.model}")
+    if shutil.which("ollama") is None:
+        sys.exit(f"model {args.model!r} missing and no `ollama` binary. "
+                 f"Install from ollama.com, then: ollama pull {args.model}")
+    log(f"model {args.model!r} missing — downloading "
+        f"(`ollama pull {args.model}`, one-time, may take a while)…")
+    t0 = time.monotonic()
+    rc = run(["ollama", "pull", args.model], root)
+    dt = time.monotonic() - t0
+    if rc != 0:
+        sys.exit(f"ollama pull {args.model} failed after {dt:.0f}s")
+    log(f"model {args.model} downloaded in {dt:.0f}s")
+    return True
+
+
 LLM_SUITES = ("dims", "longmemeval", "locomo", "beam")
 
 
@@ -255,7 +325,7 @@ READER_FIX = (
 )
 
 
-def phase_model(args: argparse.Namespace) -> bool:
+def phase_model(root: Path, args: argparse.Namespace) -> bool:
     log("== phase 2/5: model ==")
     names = ollama_models(args.base_url)
     if names is None:
@@ -263,24 +333,17 @@ def phase_model(args: argparse.Namespace) -> bool:
             log("using OpenAI-compatible reader "
                 f"(key set, base {args.base_url})")
             return True
-        log("no Ollama at " + args.base_url + " (default port 11434) "
-            "and no --api-key.")
-        log("LLM suites will be skipped; model-free suites still run.\n"
-            + READER_FIX.format(model=args.model))
-        return False
+        # One-shot: bring Ollama up ourselves instead of giving up.
+        if not ensure_ollama_up(root, args.base_url):
+            log("LLM suites will be skipped; model-free suites still run.\n"
+                + READER_FIX.format(model=args.model))
+            return False
+        names = ollama_models(args.base_url) or []
     log(f"Ollama reachable ({len(names)} models): " + ", ".join(names[:8]))
-    if args.model in names:
-        log(f"model ready: {args.model}")
-        return True
-    log(f"model {args.model!r} not pulled.")
-    if args.pull or (args.yes is False and sys.stdin.isatty()
-                     and input(f"ollama pull {args.model}? [Y/n]: "
-                               ).strip().lower() in ("", "y", "yes")):
-        rc = run(["ollama", "pull", args.model], Path.cwd())
-        if rc != 0:
-            sys.exit(f"ollama pull {args.model} failed")
-    elif not args.pull and args.yes:
-        sys.exit(f"model {args.model!r} missing — pull it or pass --pull")
+    # One-shot: a missing model downloads automatically (--no-pull opts out).
+    if args.model not in names:
+        return ensure_model_pulled(root, args, names)
+    log(f"model ready: {args.model}")
     return True
 
 
@@ -797,6 +860,51 @@ def maybe_supermemory(root: Path,
     return readiness
 
 
+def cmd_doctor(root: Path, args: argparse.Namespace) -> int:
+    """Diagnose the machine for a one-shot run. Read-only, no installs."""
+    print("# cmbench doctor")
+    print(f"- python: {sys.version.split()[0]} ({sys.executable})")
+    for tool in ("uv", "git", "cmake", "ninja", "ollama"):
+        print(f"- {tool}: {shutil.which(tool) or 'MISSING'}")
+    cxx = shutil.which("cl") or shutil.which("g++") or shutil.which("clang++")
+    print(f"- c++ compiler: {cxx or 'MISSING (needed to build the core)'}")
+    try:
+        total, used, free = shutil.disk_usage(str(root))
+        print(f"- disk free: {free / 1e9:.1f} GB of {total / 1e9:.1f} GB")
+    except OSError:
+        print("- disk free: n/a")
+    names = ollama_models(args.base_url)
+    if names is None:
+        print(f"- ollama {args.base_url}: DOWN "
+              f"(cmbench will auto-start `ollama serve`)")
+    else:
+        have = "yes" if args.model in names else "NO (will auto-pull)"
+        print(f"- ollama {args.base_url}: UP ({len(names)} models); "
+              f"{args.model}: {have}")
+    for rel in dict.fromkeys(n for s in SUITE_ORDER for n in SUITE_NEEDS[s]):
+        p = root / rel
+        ok = p.exists() and p.stat().st_size > 0
+        print(f"- dataset {rel}: {'have' if ok else 'missing (will download)'}")
+    for key in ("OPENAI_API_KEY", "SUPERMEMORY_API_KEY"):
+        print(f"- {key}: {'set' if os.environ.get(key) else 'not set'}")
+    try:
+        import supermemory  # noqa: F401
+        print("- supermemory SDK: installed")
+    except ImportError:
+        print("- supermemory SDK: missing (needs --with-supermemory)")
+    try:
+        import pandas  # noqa: F401
+        print("- pandas: installed (BEAM ready)")
+    except ImportError:
+        print("- pandas: missing (auto-installs when beam runs)")
+    try:
+        import contextmemory  # noqa: F401
+        print("- contextmemory: installed")
+    except ImportError:
+        print("- contextmemory: missing (will install)")
+    return 0
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="One-command memory benchmarks: same rig, same model.")
@@ -819,7 +927,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="official-style LLM judge for longmemeval")
     p.add_argument("--locomo-convos", nargs="+", type=int, default=[0, 1])
     p.add_argument("--beam-convos", nargs="+", type=int, default=[0, 1])
-    p.add_argument("--pull", action="store_true", help="ollama pull the model")
+    p.add_argument("--pull", action="store_true",
+                   help="kept for compatibility: pulls are now automatic")
+    p.add_argument("--no-pull", action="store_true",
+                   help="never auto-pull a missing model (metered links)")
     p.add_argument("--yes", action="store_true", help="non-interactive")
     p.add_argument("--keep-going", action="store_true")
     p.add_argument("--timeout", type=float, default=0.0,
@@ -828,6 +939,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="never pip-install anything; fail fast if missing")
     p.add_argument("--check", action="store_true",
                    help="env+model+data checks only, run nothing")
+    p.add_argument("--doctor", action="store_true",
+                   help="diagnose this machine (read-only) and exit")
     p.add_argument("--with-supermemory", action="store_true")
     p.add_argument("--out", default="",
                    help="report dir (default reports/runs/cmbench-<ts>)")
@@ -869,13 +982,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     root = Path(__file__).resolve().parents[1]
+    if args.doctor:
+        return cmd_doctor(root, args)
     ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     started = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     outdir = Path(args.out) if args.out else root / "reports" / "runs" / f"cmbench-{ts}"
     outdir.mkdir(parents=True, exist_ok=True)
 
     phase_env(root, args.yes)
-    reader_ok = phase_model(args)
+    reader_ok = phase_model(root, args)
     readiness = maybe_supermemory(root, args)
     # Fail fast on typos for the built-in suites: an unknown name must
     # never silently become somebody else's numbers.

@@ -67,6 +67,54 @@ def test_split_runnable_suites(cm) -> None:
     assert kept == [] and dropped == ["dims"]  # caller exits 2 with the fix
 
 
+def test_ensure_ollama_up_no_binary(monkeypatch, tmp_path, cm) -> None:
+    monkeypatch.setattr(cm, "ollama_models", lambda *_a, **_k: None)
+    monkeypatch.setattr(cm.shutil, "which", lambda *_a, **_k: None)
+    assert cm.ensure_ollama_up(tmp_path, "http://localhost:11434",
+                               timeout_s=0.1) is False
+
+
+def test_ensure_ollama_up_starts_server(monkeypatch, tmp_path, cm) -> None:
+    monkeypatch.setattr(cm.shutil, "which", lambda *_a, **_k: "/usr/bin/ollama")
+    calls = {"n": 0}
+
+    def fake_models(base_url):
+        calls["n"] += 1
+        return None if calls["n"] < 2 else ["qwen3:4b"]
+
+    monkeypatch.setattr(cm, "ollama_models", fake_models)
+
+    class _Proc:
+        pid = 1234
+
+    monkeypatch.setattr(cm.subprocess, "Popen", lambda *a, **k: _Proc())
+    monkeypatch.setattr(cm.time, "sleep", lambda *_a: None)
+    assert cm.ensure_ollama_up(tmp_path, "http://localhost:11434",
+                               timeout_s=5) is True
+
+
+def test_ensure_model_pulled_no_pull(tmp_path, cm) -> None:
+    args = cm.parse_args(["--model", "qwen3:4b", "--no-pull"])
+    with pytest.raises(SystemExit):
+        cm.ensure_model_pulled(tmp_path, args, [])
+
+
+def test_doctor_is_read_only(tmp_path, cm, capsys) -> None:
+
+    args = cm.parse_args(["--doctor"])
+    assert cm.cmd_doctor(tmp_path, args) == 0
+    out = capsys.readouterr().out
+    assert "python:" in out and "ollama" in out and "dataset" in out
+    kept, dropped = cm.split_runnable_suites(
+        ["dims", "bench", "longmemeval"], True)
+    assert (kept, dropped) == (["dims", "bench", "longmemeval"], [])
+    kept, dropped = cm.split_runnable_suites(
+        ["dims", "bench", "locomo"], False)
+    assert kept == ["bench"] and dropped == ["dims", "locomo"]
+    kept, dropped = cm.split_runnable_suites(["dims"], False)
+    assert kept == [] and dropped == ["dims"]  # caller exits 2 with the fix
+
+
 def test_preflight_reader_fails_cleanly() -> None:
     from contextmemory.cli import _preflight_reader
 

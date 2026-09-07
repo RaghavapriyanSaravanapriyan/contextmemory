@@ -74,9 +74,18 @@ git clone https://github.com/RaghavapriyanSaravanapriyan/contextmemory.git \
 
 ```powershell
 # Windows (PowerShell) — use `python`, not `py`
-# (the Microsoft Store `py` shim fails on fresh installs)
-git clone https://github.com/RaghavapriyanSaravanapriyan/contextmemory.git;
+# (the Microsoft Store `py` shim fails on fresh installs).
+# Backtick (`) is PowerShell's line continuation.
+git clone https://github.com/RaghavapriyanSaravanapriyan/contextmemory.git; `
   cd contextmemory; python scripts/cmbench.py --model qwen3:4b --with-supermemory
+```
+
+One-shot promise: if Ollama is down, cmbench starts `ollama serve`
+itself; if the model is missing, it runs `ollama pull` itself
+(`--no-pull` opts out). Diagnose any machine read-only first:
+
+```bash
+python scripts/cmbench.py --doctor
 ```
 
 ```bash
@@ -128,6 +137,8 @@ What the command runs (5 phases, all visible live):
 | `--fast` (default) / `--full` | ~10% subsets (50 LME Q · 1 LoCoMo convo · 1 BEAM convo) vs full official sets |
 | `--judge` | official-style LLM judge for LongMemEval (judge model recorded in report) |
 | `--timeout / --keep-going` | per-run timeout, don't stop on failure |
+| `--no-pull / --no-install` | never download models / never pip-install (fail fast instead) |
+| `--doctor` | read-only machine diagnosis (tools, Ollama, datasets, keys) |
 | `--with-supermemory` | clone reference + install SDK; lineup join needs `SUPERMEMORY_API_KEY` |
 | `--check` | install + probe + datasets only, run nothing |
 
