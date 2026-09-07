@@ -52,6 +52,9 @@ from ..tui import scenarios as demo
 from ..tui.widgets import (
     AnswerPane,
     HealthPane,
+    HelpPane,
+    ProfilePaneHQ,
+    SetupPane,
     TimelinePane,
 )
 from .scenarios import DemoStep
@@ -156,9 +159,14 @@ class ConnectAIScreen(Screen):
 class OllamaScanScreen(Screen):
     """Screen 4 — scan local Ollama models (real discovery)."""
 
+    BINDINGS = [("escape", "offline", "Continue offline")]
+
     def __init__(self, manager: OllamaManager) -> None:
         super().__init__()
         self.manager = manager
+
+    def action_offline(self) -> None:
+        self.dismiss("")
 
     def compose(self) -> ComposeResult:
         yield Static("Scanning Ollama...", id="prompt")
@@ -338,6 +346,33 @@ class OllamaConnectScreen(ModalScreen):
         self.dismiss(str(label.content))
 
 
+class ContainerSwitchScreen(ModalScreen):
+    """Modal: switch the memory container (user / project / agent)."""
+
+    BINDINGS = [("escape", "dismiss", "Back")]
+
+    def __init__(self, current: str) -> None:
+        super().__init__()
+        self._current = current
+
+    def compose(self) -> ComposeResult:
+        yield Static("Switch container", id="title")
+        yield Static(f"Current: {self._current}", id="sub")
+        yield Input(placeholder="container tag, e.g. brain", id="container",
+                    value=self._current)
+        with Horizontal(id="actions"):
+            yield Button("Switch", id="switch", variant="primary")
+
+    def on_mount(self) -> None:
+        self.query_one("#switch", Button).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "switch":
+            tag = self.query_one("#container", Input).value.strip() or \
+                self._current
+            self.dismiss(tag)
+
+
 class Dashboard(Screen):
     """Main command center: sidebar nav + content panes."""
 
@@ -350,7 +385,11 @@ class Dashboard(Screen):
         ("6", "go('perf')", "Performance"),
         ("7", "go('connections')", "Connections"),
         ("8", "go('health')", "Health"),
+        ("9", "go('profile')", "Profile"),
+        ("s", "go('setup')", "Setup"),
+        ("h", "go('help')", "Help"),
         ("o", "ollama", "Connect Ollama"),
+        ("c", "container", "Switch container"),
         ("r", "replay", "Replay"),
         ("q", "quit", "Quit"),
     ]
@@ -373,6 +412,9 @@ class Dashboard(Screen):
                     "6  Performance",
                     "7  Connections",
                     "8  Health",
+                    "9  Profile",
+                    "S  Setup",
+                    "H  Help",
                 ]:
                     nav.add_option(label)
                 yield nav
@@ -393,7 +435,7 @@ class Dashboard(Screen):
         self, event: OptionList.OptionSelected
     ) -> None:
         names = ["brain", "timeline", "why", "models", "retrieval", "perf",
-                 "connections", "health"]
+                 "connections", "health", "profile", "setup", "help"]
         await self._show(names[event.option_index])
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -408,6 +450,9 @@ class Dashboard(Screen):
     def action_ollama(self) -> None:
         self.app.action_connect_ollama()
 
+    def action_container(self) -> None:
+        self.app.action_switch_container()
+
     def action_replay(self) -> None:
         self.app.replay_demo()
 
@@ -416,6 +461,7 @@ class Dashboard(Screen):
         parts = [f"Ollama: {app.ollama_state}"]
         if app.live_model:
             parts.append(f"model: {app.live_model}")
+        parts.append(f"{app.container_tag}: {app.cell_count()} cells")
         self.query_one("#statusline", Static).update(
             Text(" | ".join(parts), style=f"{STATUS_COLORS[app.ollama_state]}")
         )
@@ -441,6 +487,12 @@ class Dashboard(Screen):
             content.mount(ConnectionsPane())
         elif name == "health":
             content.mount(HealthPane())
+        elif name == "profile":
+            content.mount(ProfilePaneHQ())
+        elif name == "setup":
+            content.mount(SetupPane())
+        elif name == "help":
+            content.mount(HelpPane())
 
 
 # --- content panes ---------------------------------------------------------
@@ -470,11 +522,10 @@ class BrainView(Vertical):
         color = STATUS_COLORS[app.ollama_state]
         model = app.live_model or app.config.model or "Automatic"
         parts = [
-            ("Memory", "Healthy"),
+            ("Memory", f"{app.cell_count()} cells"),
+            ("Container", app.container_tag),
             ("Model", model),
             ("Provider", app.config.provider or "Offline"),
-            ("Cache", "Adaptive"),
-            ("Retrieval", "Progressive"),
         ]
         status = "  ·  ".join(f"{k}: {v}" for k, v in parts)
         self.query_one("#brain-status", Static).update(
@@ -482,8 +533,12 @@ class BrainView(Vertical):
         )
 
     def _refresh_log(self) -> None:
-        log = "\n".join(self._app.log_lines[-8:]) or \
-            "Ready. Ask the brain, or press R to replay the story."
+        log = "\n".join(self._app.log_lines[-8:])
+        if not log and self._app.cell_count() == 0:
+            log = ("Empty memory — type `remember: I live in Seattle.` "
+                   "or press R to replay the story.")
+        elif not log:
+            log = "Ready. Ask the brain, or press R to replay the story."
         self.query_one("#brain-log", Static).update(log)
 
     def refresh_brain(self) -> None:
@@ -492,7 +547,11 @@ class BrainView(Vertical):
 
 
 class ModelsPane(Static):
-    """Real local Ollama models + the active model."""
+    """Real local Ollama models + the active model.
+
+    Render path never touches the network: the app caches model details
+    with a TTL and refreshes in a worker (O key or Setup view).
+    """
 
     def __init__(self, manager: OllamaManager) -> None:
         super().__init__("", id="models-pane")
@@ -506,14 +565,21 @@ class ModelsPane(Static):
         lines.append(f"Active model:   {app.live_model or cfg.model or 'Automatic'}")
         lines.append("")
         lines.append("[bold]Local — Ollama[/bold]")
-        details = self.manager.model_details()
+        details, stale = app.models_snapshot()
         if not details:
-            lines.append("  (no models reachable — is Ollama running?)")
+            if app.ollama_state == "offline":
+                lines.append("  (Ollama offline — press O to connect, "
+                             "or keep working offline)")
+            else:
+                lines.append("  (no models pulled yet — "
+                             "`ollama pull qwen3:4b`, then O to rescan)")
         for d in details:
             size = d["size_gb"]
             mark = " ›" if d["name"] == (app.live_model or cfg.model) else "  "
             lines.append(f"{mark} {d['name']}  {size:g} GB")
         lines.append("")
+        if stale:
+            lines.append("[dim]Refreshing in background…[/dim]")
         lines.append("[dim]Press O to reconnect / change models.[/dim]")
         return "\n".join(lines)
 
@@ -580,17 +646,16 @@ class ConnectionsPane(Static):
             "[bold]CONNECTIONS[/bold]",
             "",
             "[bold]AI TOOLS[/bold]",
-            "  › OpenCode            Not connected",
-            "  › Claude Code         Not connected",
-            "  › Cursor              Not connected",
+            "  › OpenCode            via MCP (config below)",
+            "  › Claude Code         via MCP (config below)",
+            "  › Cursor / Cline      via MCP (config below)",
             "",
             "[bold]PROTOCOLS[/bold]",
             "  › MCP Server          Ready (stdio)",
             "  › Python SDK          Ready",
-            "  › HTTP API            Planned",
+            "  › HTTP API            Ready (:8765)",
             "",
-            "[dim]MCP maps memory / recall / context / forget onto the engine. "
-            "Client config is generated on demand.[/dim]",
+            "[dim]contextmemory mcp --container brain[/dim]",
         ]
         return "\n".join(lines)
 
@@ -784,6 +849,93 @@ class MemoryBrainApp(App):
             )
         return self._client
 
+    @property
+    def container_tag(self) -> str:
+        return self._container
+
+    def cell_count(self) -> int:
+        try:
+            return self.client.engine.store.cell_count
+        except Exception:
+            return 0
+
+    # --- cached snapshots (render path never does IO) ------------------------
+
+    _MODELS_TTL_S = 30.0
+    _TIMELINE_TTL_S = 10.0
+
+    def models_snapshot(self) -> tuple[list[dict], bool]:
+        """Cached Ollama model details + stale flag.
+
+        Returns (details, stale): when the TTL expires the cached list is
+        returned immediately and a background refresh is kicked off, so
+        rendering never blocks on the network.
+        """
+        now = time.monotonic()
+        cached = getattr(self, "_models_cache", None)
+        at = getattr(self, "_models_cache_at", 0.0)
+        if cached is not None and now - at < self._MODELS_TTL_S:
+            return cached, False
+        if cached is not None:
+            # Expired: serve stale, refresh in background.
+            with contextlib.suppress(Exception):
+                self.run_worker(self._refresh_models_worker)
+            return cached, True
+        try:
+            details = self.ollama.model_details()
+        except Exception:
+            details = []
+        self._models_cache = details
+        self._models_cache_at = now
+        return details, False
+
+    async def _refresh_models_worker(self) -> None:
+        try:
+            details = self.ollama.model_details()
+        except Exception:
+            return
+        self._models_cache = details
+        self._models_cache_at = time.monotonic()
+
+    def refresh_models(self) -> None:
+        self._models_cache_at = 0.0
+
+    def timeline_snapshot(self) -> list:
+        """Cached timeline hits (TTL); refreshed by R key and new recalls."""
+        now = time.monotonic()
+        cached = getattr(self, "_timeline_cache", None)
+        at = getattr(self, "_timeline_cache_at", 0.0)
+        if cached is not None and now - at < self._TIMELINE_TTL_S:
+            return cached
+        return self.refresh_timeline()
+
+    def refresh_timeline(self) -> list:
+        try:
+            hits = self.client.recall(
+                "what changed over time", question_date=datetime.now(),
+                top_k=16,
+            ).hits
+        except Exception:
+            hits = []
+        self._timeline_cache = hits
+        self._timeline_cache_at = time.monotonic()
+        return hits
+
+    def action_switch_container(self) -> None:
+        def on_result(tag: str | None) -> None:
+            if tag and tag != self._container:
+                self._container = tag
+                self._client = None
+                self._timeline_cache = []
+                self._timeline_cache_at = 0.0
+                self.config.container = tag
+                with contextlib.suppress(Exception):
+                    self.config.save()
+                self._log(f"Switched container to {tag!r}.")
+                self._refresh_status()
+
+        self.push_screen(ContainerSwitchScreen(self._container), on_result)
+
     # --- input -------------------------------------------------------------
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -799,21 +951,30 @@ class MemoryBrainApp(App):
             self.ask(text)
 
     def _remember(self, content: str) -> None:
-        if not self.live_model:
-            self._log("Not connected. Press O to connect a model first.")
+        # Memory always works offline: capture + deterministic extraction
+        # need no model. A live model only upgrades extraction quality.
+        if not content:
+            self._log("Nothing to remember — type `remember: <fact>`.")
             return
         session = Session(
             session_id="live",
             timestamp=datetime.now(),
             turns=[Turn(role="user", content=content)],
         )
-        rep = self.client.session(session)
+        try:
+            rep = self.client.session(session)
+        except Exception as exc:  # noqa: BLE001 - surface, don't crash the UI
+            self._log(f"remember failed: {exc}")
+            return
+        self.refresh_timeline()
         self._log(f"remembered {content!r} -> {rep.cells} cell(s) "
                   f"({rep.new_cells} new)")
+        self._refresh_status()
 
     def action_connect_ollama(self) -> None:
         def on_result(model: str | None) -> None:
             if model:
+                self.refresh_models()
                 self._connect_live(model)
 
         self.push_screen(OllamaConnectScreen(self.ollama), on_result)
@@ -840,6 +1001,7 @@ class MemoryBrainApp(App):
 
     def _finish_demo(self) -> None:
         self._demo_running = False
+        self.refresh_timeline()
         self._refresh_status()
 
     def _replay_demo_steps(self) -> None:
@@ -909,18 +1071,20 @@ class MemoryBrainApp(App):
                 question, question_date=datetime.now(), token_budget=512,
                 top_k=8,
             )
-            self.tracker.record(RetrievalEvent(
-                query=question,
-                report=report,
-                hits=len(report.hits),
-                used_fallback=bool(report.pack and report.pack.used_fallback),
-            ))
-            self._last_elapsed_ms = (time.monotonic() - start) * 1000
         except Exception as exc:  # noqa: BLE001
             self.tracker.record(RetrievalEvent(query=question, exception=str(exc)))
             self._log(f"recall error: {exc}")
+            return
+        self.tracker.record(RetrievalEvent(
+            query=question,
+            report=report,
+            hits=len(report.hits),
+            used_fallback=bool(report.pack and report.pack.used_fallback),
+        ))
+        self.refresh_timeline()
+        self._last_elapsed_ms = (time.monotonic() - start) * 1000
         if self._offline:
-            answer, report = self._offline_answer(question)
+            answer, report = self._offline_answer(question, report)
         else:
             self.ask_live(question)
             return
@@ -946,10 +1110,15 @@ class MemoryBrainApp(App):
         )
         self._refresh_status()
 
-    def _offline_answer(self, question: str):
-        report = self.client.recall(
-            question, question_date=datetime.now(), token_budget=512, top_k=8
-        )
+    def _offline_answer(self, question: str, report=None):
+        # Single-recall path: reuse the already-retrieved report from
+        # _ask_with_trace (2x C++ search+pack per question before). Only
+        # recall here when called without a report (live-model fallback).
+        if report is None:
+            report = self.client.recall(
+                question, question_date=datetime.now(), token_budget=512,
+                top_k=8,
+            )
         if not report.plan.predicate_hint or not report.sufficient:
             return "I don't have enough information in memory.", report
         if not report.pack or not report.pack.items:
@@ -959,16 +1128,21 @@ class MemoryBrainApp(App):
         return best, report
 
     def _build_bench(self, question: str, report) -> None:
+        # Honest labeling: the ContextMemory row is measured on this run;
+        # baseline rows are order-of-magnitude estimates (full-context scales
+        # with journal size, naive RAG with a fixed 8k window), not measured
+        # head-to-head runs. See benchmarks/ for real measured comparisons.
         cm_tokens = report.tokens
         cm_ms = report.search_ms + report.pack_ms
         profile = self.client.profile(datetime.now())
         total_tokens = sum(len(f.text) // 4 + 1 for f in profile.static_facts)
         total_tokens = max(total_tokens, cm_tokens + 10)
         self.bench_rows = [
-            ("ContextMemory", cm_tokens, round(cm_ms, 3),
+            ("ContextMemory (measured)", cm_tokens, round(cm_ms, 3),
              "current + provenance"),
-            ("Naive RAG", total_tokens, round(cm_ms * 25, 3), "semantic only"),
-            ("Full context", total_tokens * 8, round(cm_ms * 120, 3),
+            ("Naive RAG (est.)", total_tokens, round(cm_ms * 25, 3),
+             "semantic only"),
+            ("Full context (est.)", total_tokens * 8, round(cm_ms * 120, 3),
              "all turns"),
         ]
 

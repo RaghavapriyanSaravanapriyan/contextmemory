@@ -6,6 +6,8 @@ VS Code, Cline, ...) over stdio:
     memory    save meaningful information (extraction path)
     recall    retrieve relevant memories for a query
     context   retrieve session context
+    profile   static (durable) + dynamic (recent) user profile, ~50ms
+    timeline  version history for a subject/predicate (updates, staleness)
     forget    remove a memory by id
 
 This is a self-contained stdio JSON-RPC server with no external MCP
@@ -79,6 +81,38 @@ _TOOLS = [
             "required": ["id"],
         },
     },
+    {
+        "name": "profile",
+        "description": (
+            "Get the user's memory profile: durable static facts plus "
+            "recent dynamic activity. One call, milliseconds, always fresh."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "container": {"type": "string"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "timeline",
+        "description": (
+            "Show how one fact evolved: current value plus superseded "
+            "history for a subject/predicate (e.g. user/location)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "subject": {"type": "string",
+                            "description": "Entity, e.g. 'user'"},
+                "predicate": {"type": "string",
+                              "description": "Attribute, e.g. 'location'"},
+                "container": {"type": "string"},
+            },
+            "required": ["subject", "predicate"],
+        },
+    },
 ]
 
 
@@ -125,9 +159,13 @@ class MCPServer:
                 f"{rep.dup_cells} duplicate)")
 
     def _tool_recall(self, args: dict[str, Any]) -> str:
+        import time
+
         query = str(args.get("query", ""))
         client = self._client(str(args.get("container", "")))
+        t0 = time.perf_counter()
         report = client.recall(query, top_k=6)
+        latency_ms = round((time.perf_counter() - t0) * 1000, 2)
 
         try:
             from contextmemory.server.app import push_event
@@ -138,7 +176,7 @@ class MCPServer:
             push_event("query_executed", {
                 "query": query,
                 "hits": hits_data,
-                "latency_ms": 1.1,
+                "latency_ms": latency_ms,
             })
         except Exception:
             pass
@@ -159,16 +197,69 @@ class MCPServer:
         return "\n".join(f"- [{h.cell_id}] {h.text}" for h in report.hits[:4])
 
     def _tool_forget(self, args: dict[str, Any]) -> str:
-        mid = int(args.get("id", 0))
-        # Mark the cell forgotten via a new version of its root if a
-        # projection exists; otherwise no-op with an honest message.
-        return f"forget(id={mid}) is a no-op for ids without a projection"
+        try:
+            mid = int(args.get("id", 0))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return "forget requires an integer memory id"
+        if mid <= 0:
+            return "forget requires a positive memory id"
+        client = self._client(str(args.get("container", "")))
+        store = client.engine.store
+        try:
+            forgotten = store.forget(mid)
+        except AttributeError:
+            return f"forget(id={mid}) unsupported by this core build"
+        if forgotten:
+            try:
+                from contextmemory.server.app import push_event
+                push_event("memory_forgotten", {"cell_id": mid})
+            except Exception:
+                pass
+            return f"forgot memory {mid}"
+        return f"forget(id={mid}) not found or already forgotten"
+
+    def _tool_profile(self, args: dict[str, Any]) -> str:
+        client = self._client(str(args.get("container", "")))
+        prof = client.profile()
+        lines = ["static (durable):"]
+        for h in prof.static_facts[:10]:
+            lines.append(f"- [{h.cell_id}] {h.text}")
+        lines.append("dynamic (recent):")
+        for h in prof.dynamic_facts[:10]:
+            lines.append(f"- [{h.cell_id}] {h.text}")
+        if len(lines) == 2:
+            return "profile is empty"
+        return "\n".join(lines)
+
+    def _tool_timeline(self, args: dict[str, Any]) -> str:
+        subject = str(args.get("subject", "")).strip()
+        predicate = str(args.get("predicate", "")).strip()
+        if not subject or not predicate:
+            return "timeline requires subject and predicate"
+        client = self._client(str(args.get("container", "")))
+        proj = client.projection(subject, predicate)
+        if proj is None:
+            return f"no history for {subject}/{predicate}"
+        # One bounded recall, then keep the version chain newest-first.
+        report = client.recall(f"{subject} {predicate}", top_k=32)
+        chain = [h for h in report.hits
+                 if h.subject == subject and h.predicate == predicate]
+        chain.sort(key=lambda h: (h.valid_from, h.cell_id), reverse=True)
+        if not chain:
+            return f"no history for {subject}/{predicate}"
+        lines = [f"{subject}/{predicate} ({proj.version_count} versions):"]
+        for h in chain[:16]:
+            tag = "current" if h.cell_id == proj.active_cell else "past"
+            lines.append(f"- [{h.cell_id} | {tag}] {h.text}")
+        return "\n".join(lines)
 
     def _dispatch(self, name: str, args: dict[str, Any]) -> str:
         handler = {
             "memory": self._tool_memory,
             "recall": self._tool_recall,
             "context": self._tool_context,
+            "profile": self._tool_profile,
+            "timeline": self._tool_timeline,
             "forget": self._tool_forget,
         }.get(name)
         if handler is None:

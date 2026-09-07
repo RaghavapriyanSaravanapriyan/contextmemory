@@ -109,7 +109,8 @@ def test_event_without_report_is_honest() -> None:
 
 def test_mcp_tools_are_declared() -> None:
     names = {t["name"] for t in _TOOLS}
-    assert names == {"memory", "recall", "context", "forget"}
+    assert names == {"memory", "recall", "context", "profile", "timeline",
+                     "forget"}
 
 
 def test_mcp_initialize_handshake() -> None:

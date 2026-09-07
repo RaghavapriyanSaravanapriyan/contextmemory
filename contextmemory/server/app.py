@@ -1,12 +1,17 @@
 """Lightweight high-performance HTTP & observability server for ContextMemory.
 
-Provides real-time endpoints for the 3D Web Observatory UI:
+Provides real-time endpoints for the 3D Web Observatory UI and any HTTP
+client (agents, apps, curl):
+
     GET  /v1/health    - System telemetry and engine status
-    GET  /v1/graph     - Exports real-time 3D memory nodes, edges, & clusters from ETMC core
-    GET  /v1/metrics   - Live cell counts, latencies, and execution stats
+    GET  /v1/graph     - Real-time 3D memory nodes, edges, & clusters from ETMC
+    GET  /v1/metrics   - Live cell counts and MEASURED latency (null when none)
     GET  /v1/events    - Stream of real-time memory creation & retrieval events
-    POST /v1/ask       - Real-time memory recall and evidence packing
+    GET  /v1/profile   - Static + dynamic profile (?space_id=brain)
+    POST /v1/ask       - Memory recall and evidence packing
+    POST /v1/recall    - Ranked hits + sufficiency + tokens (agent read path)
     POST /v1/memories  - Store new memory content into persistent journal
+    POST /v1/forget    - Forget a memory by id
 """
 
 from __future__ import annotations
@@ -26,7 +31,17 @@ from contextmemory.eval.protocol import Session, Turn
 
 _CLIENTS: dict[str, MemoryClient] = {}
 _EVENT_LOG: list[dict[str, Any]] = []
+_EVENT_SEQ = 0
 _LOCK = threading.Lock()
+
+
+def _version() -> str:
+    try:
+        from contextmemory import __version__
+
+        return __version__
+    except Exception:
+        return "0.1.0"
 
 
 def get_client(space_id: str = "brain") -> MemoryClient:
@@ -42,16 +57,46 @@ def get_client(space_id: str = "brain") -> MemoryClient:
 
 
 def push_event(event_type: str, data: dict[str, Any]) -> None:
+    global _EVENT_SEQ
     with _LOCK:
+        _EVENT_SEQ += 1
         evt = {
-            "id": f"evt_{int(time.time()*1000)}_{len(_EVENT_LOG)}",
+            "id": f"evt_{int(time.time()*1000)}_{_EVENT_SEQ}",
             "type": event_type,
             "timestamp": int(time.time() * 1000),
             "data": data,
         }
         _EVENT_LOG.append(evt)
-        if len(_EVENT_LOG) > 100:
-            _EVENT_LOG.pop(0)
+        if len(_EVENT_LOG) > 1000:
+            del _EVENT_LOG[: len(_EVENT_LOG) - 1000]
+
+
+def _measured_latency() -> dict[str, Any]:
+    """p50/p95 over recent measured query_executed events.
+
+    No synthetic constants: when no queries have run yet the fields are null
+    (honest "no data") rather than fabricated numbers.
+    """
+    with _LOCK:
+        samples = [
+            float(e["data"].get("latency_ms", 0.0))
+            for e in _EVENT_LOG
+            if e.get("type") == "query_executed"
+            and isinstance(e.get("data"), dict)
+            and "latency_ms" in e["data"]
+        ][-200:]
+    if not samples:
+        return {"p50_ms": None, "p95_ms": None, "avg_ms": None, "n": 0}
+    ordered = sorted(samples)
+    n = len(ordered)
+    p50 = ordered[min(int(0.50 * n), n - 1)]
+    p95 = ordered[min(int(0.95 * n), n - 1)]
+    return {
+        "p50_ms": round(p50, 3),
+        "p95_ms": round(p95, 3),
+        "avg_ms": round(sum(samples) / n, 3),
+        "n": n,
+    }
 
 
 def build_graph_response(space_id: str = "brain") -> dict[str, Any]:
@@ -131,7 +176,9 @@ def build_graph_response(space_id: str = "brain") -> dict[str, Any]:
             "id": "root_0",
             "space_id": space_id,
             "cell_id": 0,
-            "text": "ContextMemory Neural Core Online — Awaiting long-term memory inputs.",
+            "text": (
+                "ContextMemory Neural Core Online — Awaiting long-term memory inputs."
+            ),
             "subject": "System",
             "predicate": "status",
             "object": "Online",
@@ -141,7 +188,7 @@ def build_graph_response(space_id: str = "brain") -> dict[str, Any]:
             "salience": 1.0,
             "observed_at": int(time.time() * 1000),
             "valid_from": int(time.time() * 1000),
-            "valid_until": 0,
+            "valid_until": 2**62,
             "root_id": "root_0",
             "parent_id": "",
             "tags": ["system", "core"],
@@ -195,7 +242,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             return self._json(200, {
                 "status": "ok",
                 "service": "contextmemory",
-                "version": "2.0.0",
+                "version": _version(),
                 "mode": "local",
                 "uptime_ms": int(time.time() * 1000),
                 "cell_count": client.engine.store.cell_count,
@@ -211,7 +258,11 @@ class RequestHandler(BaseHTTPRequestHandler):
             client = get_client(space_id)
             store = client.engine.store
             return self._json(200, {
-                "health": {"status": "ok", "service": "contextmemory", "version": "2.0.0"},
+                "health": {
+                    "status": "ok",
+                    "service": "contextmemory",
+                    "version": _version(),
+                },
                 "stats": {
                     "spaces": 1,
                     "memories": store.cell_count,
@@ -219,7 +270,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "episodes": store.episode_count,
                     "generation": int(time.time()),
                 },
-                "latency": {"p50_ms": 0.8, "p95_ms": 1.9, "avg_ms": 1.0},
+                "latency": _measured_latency(),
                 "counts": {
                     "active": store.cell_count,
                     "total": store.cell_count,
@@ -231,6 +282,24 @@ class RequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/v1/events":
             with _LOCK:
                 return self._json(200, {"events": list(_EVENT_LOG)})
+
+        if parsed.path == "/v1/profile":
+            space_id = qs.get("space_id", ["brain"])[0]
+            client = get_client(space_id)
+            prof = client.profile()
+            return self._json(200, {
+                "static": [
+                    {"id": str(h.cell_id), "text": h.text,
+                     "subject": h.subject, "predicate": h.predicate,
+                     "confidence": h.confidence}
+                    for h in prof.static_facts[:20]
+                ],
+                "dynamic": [
+                    {"id": str(h.cell_id), "text": h.text,
+                     "subject": h.subject, "predicate": h.predicate}
+                    for h in prof.dynamic_facts[:20]
+                ],
+            })
 
         return self._json(404, {"error": "Not Found"})
 
@@ -267,15 +336,16 @@ class RequestHandler(BaseHTTPRequestHandler):
                 })
 
             answer = (
-                f"ContextMemory retrieved {len(hits)} connected memories across the graph index "
-                f"with {latency_ms}ms latency."
+                f"ContextMemory retrieved {len(hits)} connected memories across the "
+                f"graph index with {latency_ms}ms latency."
             )
 
+            tokens = recall_rep.pack.tokens if recall_rep.pack else 0
             evt_data = {
                 "query": query,
                 "hits": hits,
                 "latency_ms": latency_ms,
-                "tokens": recall_rep.evidence.tokens if recall_rep.evidence else 128,
+                "tokens": tokens,
             }
             push_event("query_executed", evt_data)
 
@@ -286,17 +356,21 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "hits": hits,
                 "candidates": hits,
                 "trace": {"latency_ms": latency_ms},
-                "tokens": recall_rep.evidence.tokens if recall_rep.evidence else 128,
+                "tokens": tokens,
             })
 
         if parsed.path == "/v1/memories":
             content = str(body.get("content", "")).strip()
+            if not content:
+                return self._json(400, {"error": "content is required"})
             container = str(body.get("container", "brain"))
             client = get_client(container)
 
+            from datetime import datetime
+
             session = Session(
                 session_id=f"web_{int(time.time())}",
-                timestamp=time.time(),
+                timestamp=datetime.now(),
                 turns=[Turn(role="user", content=content)],
             )
             rep = client.session(session)
@@ -312,6 +386,52 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "cells_added": rep.new_cells,
                 "total_cells": client.engine.store.cell_count,
             })
+
+        if parsed.path == "/v1/recall":
+            query = str(body.get("query", "")).strip()
+            if not query:
+                return self._json(400, {"error": "query is required"})
+            space_id = str(body.get("space_id",
+                                    body.get("container", "brain")))
+            try:
+                top_k = max(1, min(32, int(body.get("top_k", 6))))
+            except (TypeError, ValueError):
+                top_k = 6
+            start_t = time.time()
+            client = get_client(space_id)
+            recall_rep = client.recall(query, top_k=top_k)
+            latency_ms = round((time.time() - start_t) * 1000, 2)
+            hits = [{
+                "id": str(h.cell_id), "text": h.text, "score": h.score,
+                "subject": h.subject, "predicate": h.predicate,
+                "object": h.object, "kind": kind_name(h.kind),
+                "status": status_name(h.status),
+            } for h in recall_rep.hits]
+            push_event("query_executed", {
+                "query": query, "hits": hits, "latency_ms": latency_ms,
+            })
+            return self._json(200, {
+                "query": query, "hits": hits,
+                "sufficient": recall_rep.sufficient,
+                "tokens": recall_rep.pack.tokens if recall_rep.pack else 0,
+                "latency_ms": latency_ms,
+            })
+
+        if parsed.path == "/v1/forget":
+            try:
+                mid = int(body.get("id", 0))
+            except (TypeError, ValueError):
+                return self._json(400, {"error": "id must be an integer"})
+            if mid <= 0:
+                return self._json(400, {"error": "id must be positive"})
+            space_id = str(body.get("space_id",
+                                    body.get("container", "brain")))
+            client = get_client(space_id)
+            forgotten = client.engine.store.forget(mid)
+            if forgotten:
+                push_event("memory_forgotten", {"cell_id": mid})
+                return self._json(200, {"status": "ok", "forgot": mid})
+            return self._json(404, {"error": f"memory {mid} not found"})
 
         return self._json(404, {"error": "Not Found"})
 
@@ -337,6 +457,6 @@ RequestHandlerRequestHandler = RequestHandler
 
 
 if __name__ == "__main__":
-    print(f"Starting ContextMemory Observatory Server on http://127.0.0.1:8765")
+    print("Starting ContextMemory Observatory Server on http://127.0.0.1:8765")
     server = ThreadedHTTPServer(("127.0.0.1", 8765), RequestHandler)
     server.serve_forever()

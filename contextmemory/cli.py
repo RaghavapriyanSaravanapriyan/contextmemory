@@ -19,6 +19,7 @@ LLM-judged numbers.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from collections.abc import Callable
@@ -84,7 +85,12 @@ def make_reader(
 
 
 def _write_results(path: str, results: list[ReplayResult]) -> None:
-    with open(path, "w", encoding="utf-8") as fh:
+    import os
+
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
         for r in results:
             fh.write(
                 json.dumps(
@@ -99,6 +105,7 @@ def _write_results(path: str, results: list[ReplayResult]) -> None:
                 )
                 + "\n"
             )
+    os.replace(tmp, path)
 
 
 def _print_report(
@@ -204,11 +211,11 @@ def _cmd_demo(args: argparse.Namespace) -> int:
 
 def _cmd_ask(args: argparse.Namespace) -> int:
     from contextmemory.api import MemoryClient
-    from contextmemory.tui.scenarios import seed_cells
 
+    # NOTE: no demo seeding here. Earlier versions reconciled demo cells into
+    # the user's real journal on every `ask`, polluting production memory
+    # with fixture data. Ask queries what is already stored.
     client = MemoryClient(args.container, embedder=None)
-    for cell in seed_cells():
-        client.engine.store.reconcile(cell)
     reader = make_reader(
         args.reader_api_base, args.reader_api_key, args.reader_model
     )
@@ -225,10 +232,18 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     from contextmemory.eval.protocol import Session, Turn
 
     client = MemoryClient(args.container, embedder=None)
-    turns = [
-        Turn(role=role, content=content)
-        for role, content in (part.split(":", 1) for part in args.turn)
-    ]
+    turns = []
+    for part in args.turn:
+        if ":" not in part:
+            print(f"ignoring malformed --turn (want role:content): {part!r}",
+                  file=sys.stderr)
+            continue
+        role, content = part.split(":", 1)
+        turns.append(Turn(role=role.strip() or "user", content=content))
+    if not turns:
+        print("no valid turns provided (want --turn role:content)",
+              file=sys.stderr)
+        return 2
     session = Session(session_id=args.session_id, timestamp=datetime.now(),
                       turns=turns)
     rep = client.session(session)
@@ -238,12 +253,13 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
 
 
 def _launch_web_observatory() -> None:
-    """Launch the Web UI Observatory automatically in default browser with real-time backend API."""
+    """Launch the Web UI Observatory automatically with real-time backend API."""
     import os
-    import subprocess
-    import webbrowser
     import socket
+    import subprocess
     import time
+    import webbrowser
+
     from contextmemory.server.app import start_server
 
     def is_port_open(port: int) -> bool:
@@ -253,16 +269,16 @@ def _launch_web_observatory() -> None:
 
     # Start real-time HTTP server on port 8765
     if not is_port_open(8765):
-        try:
+        with contextlib.suppress(Exception):
             start_server(8765)
-        except Exception:
-            pass
 
     print("  [Observatory Server] Real-time telemetry backend online at http://127.0.0.1:8765")
 
     # Start Vite dev server on port 5173
     if not is_port_open(5173):
-        web_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
+        web_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web"
+        )
         if os.path.isdir(web_dir):
             subprocess.Popen(
                 ["npx", "vite", "--port", "5173"],
@@ -274,10 +290,59 @@ def _launch_web_observatory() -> None:
 
     print("  [Observatory Web UI] Launching live 3D memory brain at http://localhost:5173\n")
 
-    try:
+    with contextlib.suppress(Exception):
         webbrowser.open("http://localhost:5173")
-    except Exception:
-        pass
+
+
+def _cmd_setup(args: argparse.Namespace) -> int:
+    from contextmemory.setup import run_setup, show_config
+
+    if args.show:
+        return show_config()
+    return run_setup()
+
+
+def _cmd_recall(args: argparse.Namespace) -> int:
+    """Print ranked memory hits as JSON (agent/shell read path)."""
+    from contextmemory.api import MemoryClient
+
+    client = MemoryClient(args.container, embedder=None)
+    report = client.recall(args.query, top_k=args.top_k,
+                           token_budget=args.budget)
+    if args.json:
+        print(json.dumps({
+            "query": args.query,
+            "route": report.time_mode_name,
+            "sufficient": report.sufficient,
+            "tokens": report.tokens,
+            "hits": [
+                {"id": h.cell_id, "text": h.text, "subject": h.subject,
+                 "predicate": h.predicate, "score": round(h.score, 4),
+                 "projection_hit": h.projection_hit}
+                for h in report.hits
+            ],
+        }, indent=2))
+    else:
+        print(f"route: {report.time_mode_name}  "
+              f"sufficient: {report.sufficient}  tokens: {report.tokens}")
+        for h in report.hits:
+            mark = "*" if h.projection_hit else "-"
+            print(f"{mark} [{h.cell_id}] {h.text}")
+    return 0
+
+
+def _cmd_profile(args: argparse.Namespace) -> int:
+    from contextmemory.api import MemoryClient
+
+    client = MemoryClient(args.container, embedder=None)
+    prof = client.profile()
+    print("static (durable):")
+    for h in prof.static_facts[: args.top_k]:
+        print(f"- [{h.cell_id}] {h.text}")
+    print("dynamic (recent):")
+    for h in prof.dynamic_facts[: args.top_k]:
+        print(f"- [{h.cell_id}] {h.text}")
+    return 0
 
 
 def _cmd_mcp(args: argparse.Namespace) -> int:
@@ -302,6 +367,9 @@ def _cmd_chat(args: argparse.Namespace) -> int:
         return 1
 
     reader = manager.reader(model, max_tokens=args.max_tokens)
+    # Warm the model once so the first user turn skips the load penalty.
+    with contextlib.suppress(Exception):
+        reader.warm()
     memory = MCPServer(container=args.container)
     tools = [
         {"type": "function", "function": {
@@ -344,14 +412,34 @@ def _cmd_chat(args: argparse.Namespace) -> int:
             messages.append({"role": "user", "content": prompt})
             try:
                 for _ in range(4):
-                    message = reader.chat_with_tools(
-                        messages, tools, max_tokens=args.max_tokens
-                    )
+                    # Fast tool-routing pass (128 tokens): decides tools in
+                    # ~200-400ms on a 1B model instead of generating the full
+                    # answer budget before acting.
+                    message = reader.route_tools_fast(messages, tools)
                     messages.append(message)
                     calls = message.get("tool_calls") or []
                     if not calls:
-                        answer = (message.get("content") or "").strip()
-                        print(f"ollama> {answer or '(no response)'}\n")
+                        # Stream the visible answer token-by-token: TTFT is
+                        # time-to-first-chunk, not full-generation latency.
+                        # The routing call above already consumed the tool
+                        # decision; re-ask without tools for a clean stream.
+                        stream_messages = [
+                            m for m in messages
+                            if m.get("role") != "tool"
+                        ]
+                        print("ollama> ", end="", flush=True)
+                        chunks: list[str] = []
+                        for delta in reader.stream_complete(
+                            stream_messages, max_tokens=args.max_tokens
+                        ):
+                            chunks.append(delta)
+                            print(delta, end="", flush=True)
+                        print("\n")
+                        answer = "".join(chunks).strip()
+                        messages.append(
+                            {"role": "assistant",
+                             "content": answer or "(no response)"}
+                        )
                         break
                     for call in calls:
                         fn = call.get("function", {})
@@ -460,6 +548,32 @@ def main(argv: list[str] | None = None) -> int:
     p_mcp.add_argument("--container", default="brain")
     p_mcp.set_defaults(func=_cmd_mcp)
 
+    p_setup = sub.add_parser(
+        "setup", help="interactive first-run setup (provider, model, container)"
+    )
+    p_setup.add_argument(
+        "--show", action="store_true", help="print current configuration"
+    )
+    p_setup.set_defaults(func=_cmd_setup)
+
+    p_recall = sub.add_parser(
+        "recall", help="retrieve ranked memories for a query (no model)"
+    )
+    p_recall.add_argument("query")
+    p_recall.add_argument("--container", default="brain")
+    p_recall.add_argument("--top-k", type=int, default=8)
+    p_recall.add_argument("--budget", type=int, default=512)
+    p_recall.add_argument("--json", action="store_true",
+                          help="machine-readable output")
+    p_recall.set_defaults(func=_cmd_recall)
+
+    p_profile = sub.add_parser(
+        "profile", help="print the static + dynamic memory profile"
+    )
+    p_profile.add_argument("--container", default="brain")
+    p_profile.add_argument("--top-k", type=int, default=10)
+    p_profile.set_defaults(func=_cmd_profile)
+
     p_chat = sub.add_parser(
         "chat", help="chat with Ollama using ContextMemory MCP tools"
     )
@@ -477,11 +591,11 @@ def main(argv: list[str] | None = None) -> int:
     p_chat.add_argument(
         "--max-tokens",
         type=int,
-        default=4096,
+        default=1024,
         help=(
-            "generation budget per turn; thinking models (qwen3, ...) spend "
-            "tokens on reasoning before answering, so small values like "
-            "512 truncate them into silence"
+            "generation budget per streamed answer; 1B models answer briefly "
+            "and fast at 512-1024 (thinking models like qwen3 need >=512 to "
+            "avoid truncating into silence)"
         ),
     )
     p_chat.set_defaults(func=_cmd_chat)
