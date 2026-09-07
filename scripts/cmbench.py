@@ -154,16 +154,19 @@ def download(url: str, dest: Path) -> None:
     log(f"saved {dest} ({dest.stat().st_size / 1e6:.1f} MB)")
 
 
-def phase_env(root: Path, yes: bool) -> None:
+def phase_env(root: Path, args: argparse.Namespace) -> None:
     log("== phase 1/5: environment ==")
     if sys.version_info < (3, 11):  # noqa: UP036 - runtime guard for old Pythons
         sys.exit("Python >= 3.11 required, found " + sys.version.split()[0])
     try:
         import contextmemory  # noqa: F401
-        log("contextmemory importable")
+        log("contextmemory already installed — skipping reinstall")
         return
     except ImportError:
         pass
+    if args.no_install:
+        sys.exit("contextmemory is not installed and --no-install was passed. "
+                 "Run without --no-install once, or pip install -e . manually.")
     log("installing contextmemory (builds the C++ core; first run ~1-3 min)")
     for tool, hint in (
         ("cmake", "install cmake: apt/brew/choco install cmake"),
@@ -184,18 +187,28 @@ def phase_env(root: Path, yes: bool) -> None:
     else:
         sys.exit("pip install failed — install a C++/CMake/Ninja toolchain "
                  "and re-run.")
-    # Dev extras for pytest parity are optional; pandas only for BEAM.
-    _ = yes
+    # Re-verify in a FRESH interpreter: the running process never picks up
+    # newly written .pth entries, so an in-process import would lie.
+    probe = subprocess.run(
+        [sys.executable, "-c", "import contextmemory"],
+        cwd=str(root), capture_output=True)
+    if probe.returncode != 0:
+        sys.exit("install reported success but a fresh python still cannot "
+                 "import contextmemory — check which python/pip pair ran.")
 
 
-def ensure_pandas(root: Path, yes: bool) -> bool:
+def ensure_pandas(root: Path, args: argparse.Namespace) -> bool:
     try:
         import pandas  # noqa: F401
+        log("pandas already installed — skipping")
         return True
     except ImportError:
         pass
+    if args.no_install:
+        log("pandas missing and --no-install passed — dropping beam suite")
+        return False
     log("BEAM suite needs pandas+pyarrow — installing")
-    if not yes and sys.stdin.isatty():
+    if not args.yes and sys.stdin.isatty():
         ans = input("pip install pandas pyarrow? [Y/n]: ").strip().lower()
         if ans not in ("", "y", "yes"):
             return False
@@ -381,6 +394,47 @@ def parse_convo_rows(output: str) -> list[tuple[str, str, str]]:
     return rows
 
 
+def sys_metrics() -> list[tuple[str, str]]:
+    """Machine context for the report. Stdlib only, degrades to n/a."""
+    import platform as _plat
+
+    cpu = str(os.cpu_count() or "n/a")
+    ram = "n/a"
+    try:
+        if sys.platform == "linux":
+            with open("/proc/meminfo", encoding="utf-8") as fh:
+                for line in fh:
+                    if line.startswith("MemTotal:"):
+                        ram = f"{int(line.split()[1]) / 1e6:.1f} GB"
+                        break
+        elif sys.platform == "win32":
+            import ctypes
+
+            class _MS(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong),
+                            ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong),
+                            ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong),
+                            ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong),
+                            ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+            st = _MS()
+            st.dwLength = ctypes.sizeof(_MS)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st))
+            ram = f"{st.ullTotalPhys / 1e9:.1f} GB"
+        elif sys.platform == "darwin":
+            out = subprocess.run(["sysctl", "-n", "hw.memsize"],
+                                 capture_output=True, text=True)
+            ram = f"{int(out.stdout.strip()) / 1e9:.1f} GB"
+    except Exception:
+        ram = "n/a"
+    return [("os", f"{_plat.system()} {_plat.release()} ({_plat.machine()})"),
+            ("cpu cores", cpu), ("ram", ram)]
+
+
 def md_table(headers: list[str], rows: list[tuple]) -> str:
     lines = ["| " + " | ".join(headers) + " |",
              "|" + "|".join(["---"] * len(headers)) + "|"]
@@ -469,14 +523,27 @@ def _run_one(args: argparse.Namespace, root: Path, outdir: Path,
     }
 
 
-def dataset_provenance(root: Path, suites: list[str]) -> list[tuple[str, str, str]]:
+def dataset_provenance(
+    root: Path, suites: list[str]
+) -> list[tuple[str, str, str, str]]:
     rows = []
     for rel in dict.fromkeys(n for s in suites for n in SUITE_NEEDS.get(s, [])):
         p = root / rel
-        size = f"{p.stat().st_size / 1e6:.1f} MB" if p.exists() else "missing"
-        rows.append((rel, size, DATASETS.get(rel, "bundled/synthetic")))
+        if not p.exists() or p.stat().st_size == 0:
+            rows.append((rel, "missing", "-", DATASETS.get(rel, "")))
+            continue
+        size = f"{p.stat().st_size / 1e6:.1f} MB"
+        # Row counts for JSON datasets (cheap except the 277MB S file —
+        # count it by top-level split instead of full parse).
+        count = "-"
+        if p.suffix == ".json" and p.stat().st_size < 100_000_000:
+            try:
+                count = str(len(json.loads(p.read_text(encoding="utf-8"))))
+            except (ValueError, OSError, MemoryError):
+                count = "unreadable"
+        rows.append((rel, size, count, DATASETS.get(rel, "bundled/synthetic")))
     if not rows:
-        rows.append(("(synthetic)", "-", "generated in-process, no download"))
+        rows.append(("(synthetic)", "-", "-", "generated in-process, no download"))
     return rows
 
 
@@ -492,17 +559,28 @@ def render_markdown(root: Path, outdir: Path, results: dict[str, dict],
     order = ", ".join(order_systems(
         [s.strip() for s in args.systems.split(",")]))
     skip_note = (" · skipped: " + ",".join(dropped)) if dropped else ""
+    # Contender banner: who ACTUALLY ran vs who was skipped. A skipped
+    # contender must be visible at a glance — never buried in a table.
+    ran = sorted({k.split(":")[1] if ":" in k else "lineup"
+                  for k in results})
+    skipped_tp = [s for s, st, _ in readiness if st != "in lineup"]
+    banner = (f"RAN: {', '.join(ran) or 'nothing'}"
+              + (f" · SKIPPED: {', '.join(skipped_tp)}" if skipped_tp else "")
+              + (" · (all requested contenders ran)" if not skipped_tp else
+                 " · (skipped contenders scored NOTHING — see readiness)"))
     lines = [
         "# cmbench report",
         "",
         f"**{'PASS' if ok else 'FAIL'}** · {started} · "
         f"model `{args.model}` · run order `{order}`{skip_note}",
         "",
+        f"> {banner}",
+        "",
         "## Rig",
         "",
         md_table(["Field", "Value"], [
             ("date (UTC)", started),
-            ("platform", f"{_plat.system()} {_plat.release()} ({_plat.machine()})"),
+            *sys_metrics(),
             ("python", _plat.python_version()),
             ("model (ALL systems)", args.model),
             ("reader base URL", args.base_url),
@@ -555,7 +633,7 @@ def render_markdown(root: Path, outdir: Path, results: dict[str, dict],
     lines += [
         "## Datasets (official sources only)",
         "",
-        md_table(["File", "Size", "Official source"],
+        md_table(["File", "Size", "Items", "Official source"],
                  dataset_provenance(root, suites_in(results))),
         "",
         "## Third-party readiness",
@@ -642,10 +720,13 @@ def ensure_supermemory_sdk(root: Path, args: argparse.Namespace) -> None:
     """Best-effort `pip install supermemory` (explicit opt-in = consent)."""
     try:
         import supermemory  # noqa: F401
-        log("supermemory package present")
+        log("supermemory SDK already installed — skipping")
         return
     except ImportError:
         pass
+    if args.no_install:
+        log("supermemory SDK missing and --no-install passed — skipping")
+        return
     log("installing supermemory SDK (third-party contender)")
     cmd = (["uv", "pip", "install", "supermemory"] if shutil.which("uv")
            else [sys.executable, "-m", "pip", "install", "supermemory",
@@ -662,7 +743,20 @@ def check_supermemory_ready() -> tuple[bool, str]:
         from adapters import probe_supermemory
     except ImportError as exc:
         return False, f"adapter missing ({exc})"
-    return probe_supermemory()
+    ready, detail = probe_supermemory()
+    if not ready and "no key" in detail:
+        # Their documented self-host port: if something listens there,
+        # say so (the binary prints its API key on first boot — paste it
+        # into SUPERMEMORY_API_KEY). Port-open is a hint, not a claim.
+        import socket as _sock
+
+        try:
+            with _sock.create_connection(("127.0.0.1", 6767), timeout=1.0):
+                detail += ("; local :6767 is OPEN (their self-host default)"
+                           " — use the API key that binary printed")
+        except OSError:
+            pass
+    return ready, detail
 
 
 def maybe_supermemory(root: Path,
@@ -712,12 +806,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--systems", default="contextmemory,full-history",
                    help="comma list: contextmemory,supermemory,full-history,"
                    "recency-2,recency-10,recency")
-    p.add_argument("--suites", default="dims,bench",
-                   help="comma list of dims,bench,longmemeval,locomo,beam (or all)")
-    p.add_argument("--fast", action="store_true", default=True,
-                   help="~10%% subsets for speed (default on)")
+    p.add_argument("--suites", default="longmemeval,locomo,beam",
+                   help="comma list of dims,bench,longmemeval,locomo,beam (or all)."
+                   " Default: the three official benchmarks (no synthetics).")
+    p.add_argument("--fast", action="store_true",
+                   help="~10% smoke subsets (50 LME / 1 LoCoMo / 1 BEAM convo)")
     p.add_argument("--full", action="store_true",
-                   help="full official sets (overrides --fast)")
+                   help="full official sets (default when --fast is absent)")
     p.add_argument("--n", type=int, default=0,
                    help="longmemeval instances (0 = preset default)")
     p.add_argument("--judge", action="store_true",
@@ -729,6 +824,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--keep-going", action="store_true")
     p.add_argument("--timeout", type=float, default=0.0,
                    help="per-suite timeout in seconds (0 = none)")
+    p.add_argument("--no-install", action="store_true",
+                   help="never pip-install anything; fail fast if missing")
     p.add_argument("--check", action="store_true",
                    help="env+model+data checks only, run nothing")
     p.add_argument("--with-supermemory", action="store_true")
@@ -742,20 +839,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         if s not in SUITE_ORDER:
             sys.exit(f"unknown suite {s!r} (pick from {SUITE_ORDER})")
     args.suites = [s for s in SUITE_ORDER if s in suites]
-    # Subset presets: --fast (~10% for speed, the default) vs --full.
+    # Subset presets: FULL official sets by default; --fast selects the
+    # ~10% smoke subsets (50 LME questions, 1 LoCoMo convo, 1 BEAM convo).
     # dims/bench are synthetic and always run whole (they take seconds).
-    if args.full:
+    fast = args.fast and not args.full
+    if fast:
+        if args.n <= 0:
+            args.n = 50
+        if args.locomo_convos == [0, 1]:
+            args.locomo_convos = [0]
+        if args.beam_convos == [0, 1]:
+            args.beam_convos = [0]
+    else:
         if args.n <= 0:
             args.n = 500  # full LongMemEval question set
         if args.locomo_convos == [0, 1]:
             args.locomo_convos = list(range(10))  # all 10 conversations
-    else:
-        if args.n <= 0:
-            args.n = 50  # ~10% of the 500 LongMemEval questions
-        if args.locomo_convos == [0, 1]:
-            args.locomo_convos = [0]  # 1/10 conversations
         if args.beam_convos == [0, 1]:
-            args.beam_convos = [0]  # 1 conversation
+            # Full 100K split (20 convos); guarded per-convo downstream.
+            args.beam_convos = list(range(20))
     systems = [s.strip() for s in args.systems.split(",") if s.strip()]
     if not systems:
         sys.exit("--systems is empty")
@@ -791,7 +893,7 @@ def main(argv: list[str] | None = None) -> int:
         err("nothing runnable: every requested suite needs a reader model.")
         err(READER_FIX.format(model=args.model))
         return 2
-    if "beam" in args.suites and not ensure_pandas(root, args.yes):
+    if "beam" in args.suites and not ensure_pandas(root, args):
         log("pandas declined — dropping beam suite")
         args.suites = [s for s in args.suites if s != "beam"]
     phase_data(root, args.suites)

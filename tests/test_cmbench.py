@@ -25,20 +25,30 @@ def cm():
 
 
 def test_parse_args_defaults(cm) -> None:
+    # Defaults are FULL official sets — no small/synthetic version
+    # unless --fast is passed explicitly.
     args = cm.parse_args(["--model", "qwen3:4b"])
     assert args.model == "qwen3:4b"
-    assert args.suites == ["dims", "bench"]
+    assert args.suites == ["longmemeval", "locomo", "beam"]
     assert args.timeout == 0.0
-    assert args.n == 50  # fast preset ≈10%
-    assert args.locomo_convos == [0]
-    assert args.beam_convos == [0]
+    assert args.n == 500
+    assert args.locomo_convos == list(range(10))
+    assert args.beam_convos == list(range(20))
     assert args.systems_list == ["contextmemory", "full-history"]
 
 
-def test_parse_args_full_preset(cm) -> None:
-    args = cm.parse_args(["--full"])
-    assert args.n == 500
-    assert args.locomo_convos == list(range(10))
+def test_parse_args_fast_preset(cm) -> None:
+    args = cm.parse_args(["--fast"])
+    assert args.n == 50
+    assert args.locomo_convos == [0]
+    assert args.beam_convos == [0]
+
+
+def test_parse_args_all_and_rejects_unknown(cm) -> None:
+    args = cm.parse_args(["--suites", "all"])
+    assert args.suites == ["dims", "bench", "longmemeval", "locomo", "beam"]
+    with pytest.raises(SystemExit):
+        cm.parse_args(["--suites", "nope"])
 
 
 def test_order_systems(cm) -> None:
@@ -75,13 +85,6 @@ def test_preflight_reader_passes(fake_reader) -> None:
     from contextmemory.cli import _preflight_reader
 
     assert _preflight_reader(fake_reader, "m", "u") is None
-
-
-def test_parse_args_all_and_rejects_unknown(cm) -> None:
-    args = cm.parse_args(["--suites", "all"])
-    assert args.suites == ["dims", "bench", "longmemeval", "locomo", "beam"]
-    with pytest.raises(SystemExit):
-        cm.parse_args(["--suites", "nope"])
 
 
 def test_suite_cmd_shapes(cm, tmp_path) -> None:

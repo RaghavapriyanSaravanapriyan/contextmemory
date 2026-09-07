@@ -80,11 +80,23 @@ git clone https://github.com/RaghavapriyanSaravanapriyan/contextmemory.git;
 ```
 
 ```bash
-# The full gauntlet instead of the default ~10% fast subsets
+# The full official benchmark: every suite, full sets, head-to-head lineup
 python scripts/cmbench.py --model qwen3:4b --with-supermemory \
   --suites all --systems contextmemory,supermemory,full-history \
-  --full --judge --yes
+  --judge --yes
 ```
+
+```bash
+# Smoke test first (~10%: 50 LME questions, 1 LoCoMo convo, 1 BEAM convo)
+python scripts/cmbench.py --model qwen3:4b --fast --yes
+```
+
+Idempotent by design: installed packages are detected and skipped (never
+reinstalled), datasets resume by existence check, and `--no-install` fails
+fast instead of touching anything. Honest time guidance: the full run is
+LLM-bound (hundreds of reader calls per system) — minutes on a GPU host,
+hours on CPU-only Ollama. The `--fast` smoke gives the same tables and
+the same `REPORT.md` contract in minutes.
 
 What the command downloads (official sources only, URLs pinned in
 `scripts/cmbench.py` and verified):

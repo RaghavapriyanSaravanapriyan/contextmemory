@@ -275,7 +275,12 @@ def cmd_beam(args: argparse.Namespace) -> int:
     summary: dict = {}
 
     for ci in args.convos:
-        sessions, probes, qdate, cid = load_beam_convo(bucket, ci)
+        try:
+            sessions, probes, qdate, cid = load_beam_convo(bucket, ci)
+        except (IndexError, KeyError, ValueError) as exc:
+            print(f"convo index {ci} unavailable in {args.bucket}: {exc} "
+                  f"— skipped", flush=True)
+            continue
         print(f"convo {cid}: {len(sessions)} sessions, {len(probes)} probes",
               flush=True)
         for name in systems:
@@ -403,7 +408,12 @@ def cmd_locomo(args: argparse.Namespace) -> int:
     summary: dict = {}
 
     for ci in args.convos:
-        convo = data[ci]
+        try:
+            convo = data[ci]
+        except IndexError:
+            print(f"convo index {ci} unavailable in locomo10 "
+                  f"({len(data)} convos) — skipped", flush=True)
+            continue
         conv = convo["conversation"]
         import re as _re
 
