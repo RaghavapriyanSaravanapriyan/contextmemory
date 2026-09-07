@@ -122,6 +122,7 @@ class SearchHit:
     confidence: float
     salience: float
     access_heat: int
+    observed_at: int
     valid_from: int
     valid_until: int
     root_id: int
@@ -208,6 +209,7 @@ def _hit_from_dict(d: dict[str, Any]) -> SearchHit:
         confidence=float(d["confidence"]),
         salience=float(d["salience"]),
         access_heat=int(d.get("access_heat", 0)),
+        observed_at=int(d.get("observed_at", 0)),
         valid_from=int(d["valid_from"]),
         valid_until=int(d["valid_until"]),
         root_id=int(d["root_id"]),
@@ -231,6 +233,7 @@ def _hit_to_dict(h: SearchHit) -> dict[str, Any]:
         "confidence": h.confidence,
         "salience": h.salience,
         "access_heat": h.access_heat,
+        "observed_at": h.observed_at,
         "valid_from": h.valid_from,
         "valid_until": h.valid_until,
         "root_id": h.root_id,
@@ -295,6 +298,10 @@ class MemoryStore:
 
     def bump_access(self, cell_id: int) -> None:
         self._store.bump_access(cell_id)
+
+    def forget(self, cell_id: int) -> bool:
+        """Mark a cell Forgotten; active retrieval excludes it."""
+        return bool(self._store.forget(cell_id))
 
     def add_embedding(self, cell_id: int, vector: list[float]) -> None:
         self._store.add_embedding(cell_id, vector)

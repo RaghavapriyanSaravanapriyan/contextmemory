@@ -5,6 +5,23 @@ from __future__ import annotations
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolate_user_dirs(tmp_path, monkeypatch):
+    """Keep tests off the real user journals and config.
+
+    MemoryClient defaults to persistent per-container journals under the
+    platform data dir; without isolation every test run writes into
+    ~/.local/share/contextmemory. Point both dirs at tmp per test.
+    """
+    (tmp_path / "config").mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    # Windows/macOS branches read other vars; belt and suspenders.
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "config"))
+    yield
+
+
 class FakeReader:
     """Deterministic reader for tests.
 

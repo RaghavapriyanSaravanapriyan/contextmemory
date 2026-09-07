@@ -30,6 +30,10 @@ from .engine.memory import (
 )
 from .eval.protocol import ReaderClient, Session
 
+#: Sentinel for "resolve the default journal path". ``None`` means in-memory
+#: (no persistence); any str/Path means that journal file.
+_DEFAULT_JOURNAL: object = object()
+
 
 class MemoryClient:
     """The public memory layer API for one container tag.
@@ -46,17 +50,19 @@ class MemoryClient:
         *,
         extractor: Extractor | None = None,
         embedder: Embedder | None = None,
-        journal_path: str | None = None,
+        journal_path: str | None | object = _DEFAULT_JOURNAL,
     ) -> None:
-        if journal_path is None:
+        if journal_path is _DEFAULT_JOURNAL:
             from .config import journal_path as _jp
 
             journal_path = str(_jp(container_tag))
+        elif journal_path is not None:
+            journal_path = str(journal_path)  # type: ignore[arg-type]
         self._engine = MemoryEngine(
             container_tag=container_tag,
             extractor=extractor or NullExtractor(),
             embedder=embedder,
-            journal_path=journal_path,
+            journal_path=journal_path,  # type: ignore[arg-type]
         )
 
     @property

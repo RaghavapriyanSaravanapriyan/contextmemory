@@ -32,6 +32,11 @@ _STOPWORDS = {
 
 
 def _normalize(text: str) -> str:
+    # Official benchmark answers are not always strings (e.g. LongMemEval
+    # uses a bare year number for some temporal answers); coerce so scoring
+    # never crashes on real data.
+    if not isinstance(text, str):
+        text = str(text)
     text = text.lower()
     text = text.translate(str.maketrans("", "", string.punctuation))
     return re.sub(r"\s+", " ", text).strip()
@@ -124,6 +129,22 @@ class ScoreReport:
     n: int
 
 
+def _judge_yes(response: str) -> bool:
+    """Parse a yes/no judge response without substring false-positives.
+
+    ``"yes" in text`` matches "eyes"/"yesterday". Require a word-boundary
+    yes as the first verdict token; fall back to no.
+    """
+    text = response.strip().lower()
+    if re.match(r"yes\b", text):
+        return True
+    # Judges that explain first ("The answer is yes because..."): accept a
+    # standalone yes anywhere, still on word boundaries.
+    return re.search(r"\byes\b", text) is not None and not re.match(
+        r"no\b", text
+    )
+
+
 def _aggregate(flags: list[tuple[str, bool]]) -> ScoreReport:
     per_type: dict[str, list[bool]] = defaultdict(list)
     for qtype, correct in flags:
@@ -155,17 +176,35 @@ def judge_results(
     """Score with an LLM judge using official LongMemEval prompts.
 
     Returns (report, results) where each result carries its judged label.
+    A judge call that raises marks that item unjudged (judged=None) instead
+    of aborting the whole run — one flaky completion must not lose hours of
+    replay evidence.
     """
     labeled: list[ReplayResult] = []
     for r in results:
         prompt = build_anscheck_prompt(
             r.question_type, r.question, r.answer, r.hypothesis, r.is_abstention
         )
-        response = judge.complete(
-            [{"role": "user", "content": prompt}],
-            temperature=temperature,
-        )
-        label = "yes" in response.lower()
+        try:
+            response = judge.complete(
+                [{"role": "user", "content": prompt}],
+                temperature=temperature,
+            )
+        except Exception:
+            labeled.append(
+                ReplayResult(
+                    question_id=r.question_id,
+                    question_type=r.question_type,
+                    question=r.question,
+                    answer=r.answer,
+                    hypothesis=r.hypothesis,
+                    is_abstention=r.is_abstention,
+                    timing=r.timing,
+                    judged=None,
+                )
+            )
+            continue
+        label = _judge_yes(response)
         labeled.append(
             ReplayResult(
                 question_id=r.question_id,
@@ -178,6 +217,8 @@ def judge_results(
                 judged=label,
             )
         )
-    flags = [(r.question_type, r.judged) for r in labeled]
-    assert all(f is not None for _, f in flags)
+    # Unjudged items (judge call failed) are excluded from the aggregate but
+    # kept in `labeled` with judged=None so evidence is never silently
+    # dropped. Failing hard here would discard the whole run over one flake.
+    flags = [(r.question_type, r.judged) for r in labeled if r.judged is not None]
     return _aggregate(flags), labeled

@@ -86,16 +86,22 @@ class AppConfig:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return cls()
-        known = {f: getattr(cls(), f) for f in cls.__dataclass_fields__}
-        known.update(data)
-        return cls(**{k: v for k, v in known.items()})
+        if not isinstance(data, dict):
+            return cls()
+        # Filter unknown keys: forward-compat (newer config on older binary)
+        # and hand-edited typos must not crash startup with TypeError.
+        fields = cls.__dataclass_fields__
+        known = {f: getattr(cls(), f) for f in fields}
+        known.update({k: v for k, v in data.items() if k in fields})
+        return cls(**{k: v for k, v in known.items() if k in fields})
 
     def save(self) -> None:
         path = _config_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(asdict(self), indent=2), encoding="utf-8"
-        )
+        # Atomic write: tmp + rename so a crash never leaves half a config.
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
+        tmp.replace(path)
 
     def complete_onboarding(
         self, *, building: str, provider: str, model: str,

@@ -113,16 +113,28 @@ class MemoryEngine:
         self._cells_ingested = 0
         self._extract_failures = 0
         self._fallback_count = 0
+        # Dedup accounting across the engine lifetime, not per ingest() call:
+        # a cell duplicating a prior session's cell is a dup, not new.
+        self._seen_ids: set[int] = set()
+        self._persist_failures = 0
         self._journal: str | None = str(journal_path) if journal_path else None
         if self._journal:
             with contextlib.suppress(OSError, RuntimeError, ValueError):
                 self._store.load(self._journal)
 
     def persist(self) -> None:
-        """Write the memory journal to disk (no-op without a journal path)."""
+        """Write the memory journal to disk (no-op without a journal path).
+
+        Persist failures are counted (``persist_failures``) rather than
+        raised: ingest must not die because the disk is full, but the caller
+        can observe the counter instead of assuming durability.
+        """
         if self._journal:
-            Path(self._journal).parent.mkdir(parents=True, exist_ok=True)
-            self._store.save(self._journal)
+            try:
+                Path(self._journal).parent.mkdir(parents=True, exist_ok=True)
+                self._store.save(self._journal)
+            except (OSError, RuntimeError, ValueError):
+                self._persist_failures += 1
 
     @property
     def store(self) -> MemoryStore:
@@ -147,6 +159,10 @@ class MemoryEngine:
     @property
     def fallback_count(self) -> int:
         return self._fallback_count
+
+    @property
+    def persist_failures(self) -> int:
+        return self._persist_failures
 
     # --- write path ---------------------------------------------------------
 
@@ -175,14 +191,13 @@ class MemoryEngine:
         report.extract_output_tokens = _estimate_tokens("".join(c.text for c in cells))
 
         t0 = time.perf_counter()
-        seen: set[int] = set()
         created: list[tuple[CellInput, int]] = []
         for cell in cells:
             cell_id = self._store.reconcile(cell)
-            if cell_id in seen:
+            if cell_id in self._seen_ids:
                 report.dup_cells += 1
             else:
-                seen.add(cell_id)
+                self._seen_ids.add(cell_id)
                 report.new_cells += 1
                 created.append((cell, cell_id))
         report.reconcile_ms = (time.perf_counter() - t0) * 1000
@@ -286,6 +301,13 @@ class MemoryEngine:
         self._store.save(path)
 
     def load(self, path: str) -> None:
+        """Load a snapshot file into this engine.
+
+        NOTE: this replaces in-memory state but does NOT rebind the journal:
+        the next ingest persists the merged state back to the original
+        journal path. Use ``save``/explicit paths for snapshots; the journal
+        binding only changes by constructing a new engine.
+        """
         self._store.load(path)
 
 
