@@ -16,8 +16,12 @@ add_library(cmcore STATIC
   src/store.cpp
 )
 target_include_directories(cmcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_compile_options(cmcore PRIVATE -Wall -Wextra -Wpedantic)
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+# Compiler-portable warnings: GCC/Clang flags are NOT valid for MSVC's
+# cl.exe (error D8021). Each toolchain gets its own dialect.
+if(MSVC)
+  target_compile_options(cmcore PRIVATE /W4 /permissive- /utf-8 /EHsc)
+else()
+  target_compile_options(cmcore PRIVATE -Wall -Wextra -Wpedantic)
   if(CMCORE_AVX2 AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
     target_compile_options(cmcore PRIVATE -mavx2 -mfma)
   endif()

@@ -46,6 +46,17 @@ Verify the install:
 ./scripts/verify.sh   # pytest + ruff (C++ suite: see below)
 ```
 
+Windows note: `verify.sh` needs Git Bash. Native PowerShell equivalent:
+
+```powershell
+uv run pytest
+uv run ruff check contextmemory tests
+```
+
+The C++ core compiles on MSVC 2022, GCC, and Clang (warning dialects are
+per-toolchain in `core/CMakeLists.txt`). If a stale `build/` cache ever
+fights you, delete it and re-run `uv sync`.
+
 ## One-command benchmark (any machine, any OS)
 
 One command downloads datasets, installs everything, and runs every
