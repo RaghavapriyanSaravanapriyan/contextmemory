@@ -20,18 +20,28 @@ What it does, in order:
              builds the C++ core; needs cmake+ninja+compiler with hints).
   2. MODEL  — probes the reader (--base-url, Ollama by default), lists
              models, pulls --model on request.
-  3. DATA   — fetches missing official datasets (LongMemEval oracle/S,
-             LoCoMo, BEAM parquet) with MB progress bars.
-  4. RUN    — runs suites SERIALLY (dims, bench, longmemeval, locomo,
-             beam), every system on the SAME model, stdout streamed live.
-  5. REPORT — checkpoints JSONL under reports/runs/cmbench-<ts>/ plus a
-             final metrics table (accuracy, tokens, latency).
+  3. DATA   — fetches missing OFFICIAL datasets (LongMemEval oracle/S,
+             LoCoMo, BEAM parquet) with MB progress bars. URLs are pinned
+             to upstream repos (see DATASETS) and verified.
+  4. RUN    — runs suites SERIALLY in fixed order (contextmemory first,
+             then supermemory, then baselines): dims + bench run EVERY
+             system separately; official suites share one replay + judge.
+             stdout streamed live.
+  5. REPORT — checkpoints JSONL under reports/runs/cmbench-<ts>/ plus
+             REPORT.md (metrics tables, rig, sources, readiness, bias
+             controls) and summary.json.
+
+Bias controls: same model/reader/judge for all, explicit system
+resolution (unknown names exit loudly, never silent fallbacks),
+third parties fail closed (skipped with reason, never zeros),
+--fast (≈10% subsets, default) vs --full.
 
 Optional head-to-heads (no key = cleanly skipped, never faked):
-  --with-supermemory  clone supermemoryai/supermemory for reference and, if
-                      SUPERMEMORY_API_KEY is set, add it to the lineup.
-  --with-mem0         add Mem0 to the lineup if `mem0ai` is installed and
-                      OPENAI_API_KEY (or MEM0_API_KEY) is set.
+  --with-supermemory  clone supermemoryai/supermemory for reference,
+                      install the official SDK, and — when
+                      SUPERMEMORY_API_KEY is set — add it to the lineup
+                      through benchmarks/adapters (same reader, same
+                      prompt shape, async ingest polled to done).
 
 Only stdlib is used so the script runs before anything is installed.
 """
@@ -81,7 +91,20 @@ SUITE_NEEDS = {
     "beam": ["benchmarks/data/beam/data/100K-00000-of-00001.parquet"],
 }
 
+# Every dataset comes from its OFFICIAL source. Verified 2026-09-08:
+# - LongMemEval files: official README download block (huggingface.co /
+#   xiaowu0162/longmemeval-cleaned). Superseded only by longmemeval_m (not
+#   used: needs 500-session histories per question).
+# - LoCoMo: official repo README points at ./data/locomo10.json
+#   (github.com/snap-research/locomo); downloaded 2.8MB, byte-identical path.
+# - BEAM 100K: HEAD-checked 200 on huggingface.co/Mohammadta/BEAM
+#   (5.4MB, CC-BY-SA-4.0). Splits used per --bucket (default 100K).
 SUITE_ORDER = ["dims", "bench", "longmemeval", "locomo", "beam"]
+
+# CLI-validated system names for the built-in dims/bench suites.
+LOCAL_SYSTEMS = {"full-history", "recency-2", "recency-10", "contextmemory",
+                 "supermemory"}
+THIRD_PARTY = {"supermemory"}
 
 
 def log(msg: str) -> None:
@@ -234,17 +257,17 @@ def phase_data(root: Path, suites: list[str]) -> None:
 
 
 def suite_cmd(args: argparse.Namespace, root: Path, outdir: Path,
-              suite: str) -> list[str]:
+              suite: str, system: str = "") -> list[str]:
     py = sys.executable
     base = ["--reader-api-base", args.base_url,
             "--reader-api-key", args.api_key, "--reader-model", args.model]
     if suite == "dims":
-        return [py, "-m", "contextmemory.cli", "dims",
-                "--system", args.systems.split(",")[0].strip(),
+        # Zero-bias rule: EVERY system runs the same scenarios, same reader.
+        return [py, "-m", "contextmemory.cli", "dims", "--system", system,
                 *base]
     if suite == "bench":
-        return [py, "-m", "contextmemory.cli", "bench",
-                "--system", "contextmemory"]
+        # Deterministic latency, per system (null reader, no model).
+        return [py, "-m", "contextmemory.cli", "bench", "--system", system]
     if suite == "longmemeval":
         systems = [s.strip() for s in args.systems.split(",")]
         # run_official handles multi-system lineups on one rig
@@ -328,52 +351,84 @@ def md_table(headers: list[str], rows: list[tuple]) -> str:
     return "\n".join(lines) if len(lines) > 2 else "_no rows parsed (see log)_"
 
 
+def order_systems(systems: list[str]) -> list[str]:
+    """Run order, fixed for comparability: contextmemory first (full detail),
+    then supermemory, then baselines. Order never affects scores — every
+    system gets a fresh container and identical inputs."""
+    first = [s for s in systems if s == "contextmemory"]
+    second = [s for s in systems if s == "supermemory"]
+    rest = [s for s in systems if s not in ("contextmemory", "supermemory")]
+    return first + second + rest
+
+
 def phase_run(args: argparse.Namespace, root: Path, outdir: Path,
-              suites: list[str]) -> dict[str, dict]:
+              suites: list[str], systems: list[str]) -> dict[str, dict]:
     log("== phase 4/5: running suites serially, one rig, one model ==")
-    log(f"model={args.model} base={args.base_url} systems={args.systems}")
+    log(f"model={args.model} base={args.base_url} order={order_systems(systems)}")
     results: dict[str, dict] = {}
     for i, suite in enumerate(suites, 1):
-        log(f"-- suite {i}/{len(suites)}: {suite} --")
-        t0 = time.perf_counter()
-        cmd = suite_cmd(args, root, outdir, suite)
-        # Tee live output to both terminal and per-suite log.
-        logfile = outdir / f"{suite}.log"
-        proc = subprocess.Popen(
-            cmd, cwd=str(root), stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, text=True, bufsize=1,
-        )
-        assert proc.stdout is not None
-        text: list[str] = []
-        timed_out = False
-        with open(logfile, "w", encoding="utf-8") as fh:
-            try:
-                for line in proc.stdout:
-                    print(line, end="", flush=True)
-                    fh.write(line)
-                    text.append(line)
-                rc = proc.wait(timeout=args.timeout or None)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                rc = 124
-                timed_out = True
-                msg = f"\n[cmbench] suite {suite} exceeded --timeout {args.timeout}s\n"
-                print(msg, flush=True)
-                fh.write(msg)
-        dt = time.perf_counter() - t0
-        blob = "".join(text)
-        results[suite] = {
-            "exit": rc, "seconds": round(dt, 1),
-            "summary": parse_summary(suite, blob),
-            "timed_out": timed_out,
-            "log": str(logfile),
-        }
-        status = "OK" if rc == 0 else ("TIMEOUT" if timed_out else f"FAILED({rc})")
-        log(f"suite {suite}: {status} in {dt:.0f}s — {results[suite]['summary']}")
-        if rc != 0 and not args.keep_going:
-            sys.exit(f"stopping after {suite} failure (see {logfile}); "
-                     f"re-run with --keep-going to continue")
+        if suite in ("dims", "bench"):
+            # Per-system runs: the bias fix. Each contender faces the same
+            # scenarios/workload; tables stay side-by-side in REPORT.md.
+            for system in order_systems(systems):
+                key = f"{suite}:{system}"
+                log(f"-- suite {i}/{len(suites)}: {suite} [{system}] --")
+                results[key] = _run_one(args, root, outdir, suite, system, key)
+                if results[key]["exit"] != 0 and not args.keep_going:
+                    sys.exit(_fail_msg(suite, system, outdir))
+        else:
+            # Official suites run the whole lineup in one process (shared
+            # replay, shared judge) via benchmarks/run_official.py.
+            log(f"-- suite {i}/{len(suites)}: {suite} "
+                f"[{','.join(order_systems(systems))}] --")
+            results[suite] = _run_one(args, root, outdir, suite, "", suite)
+            if results[suite]["exit"] != 0 and not args.keep_going:
+                sys.exit(_fail_msg(suite, "lineup", outdir))
     return results
+
+
+def _fail_msg(suite: str, who: str, outdir: Path) -> str:
+    return (f"stopping after {suite} [{who}] failure "
+            f"(see {outdir / (suite + '.log')}); re-run with --keep-going "
+            f"to continue")
+
+
+def _run_one(args: argparse.Namespace, root: Path, outdir: Path,
+             suite: str, system: str, key: str) -> dict:
+    t0 = time.perf_counter()
+    cmd = suite_cmd(args, root, outdir, suite, system)
+    logfile = outdir / f"{key.replace(':', '-')}.log"
+    # Tee live output to both terminal and per-run log.
+    proc = subprocess.Popen(
+        cmd, cwd=str(root), stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True, bufsize=1,
+    )
+    assert proc.stdout is not None
+    text: list[str] = []
+    timed_out = False
+    with open(logfile, "w", encoding="utf-8") as fh:
+        try:
+            for line in proc.stdout:
+                print(line, end="", flush=True)
+                fh.write(line)
+                text.append(line)
+            rc = proc.wait(timeout=args.timeout or None)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            rc = 124
+            timed_out = True
+            msg = f"\n[cmbench] {key} exceeded --timeout {args.timeout}s\n"
+            print(msg, flush=True)
+            fh.write(msg)
+    dt = time.perf_counter() - t0
+    blob = "".join(text)
+    status = "OK" if rc == 0 else ("TIMEOUT" if timed_out else f"FAILED({rc})")
+    summary = parse_summary(suite, blob)
+    log(f"run {key}: {status} in {dt:.0f}s — {summary}")
+    return {
+        "exit": rc, "seconds": round(dt, 1), "summary": summary,
+        "timed_out": timed_out, "log": str(logfile),
+    }
 
 
 def dataset_provenance(root: Path, suites: list[str]) -> list[tuple[str, str, str]]:
@@ -388,16 +443,20 @@ def dataset_provenance(root: Path, suites: list[str]) -> list[tuple[str, str, st
 
 
 def render_markdown(root: Path, outdir: Path, results: dict[str, dict],
-                    args: argparse.Namespace, started: str) -> str:
+                    args: argparse.Namespace, started: str,
+                    readiness: list[tuple[str, str, str]],
+                    judge_note: str) -> str:
     """Portable Markdown report: the artifact you paste into a PR or issue."""
     import platform as _plat
 
     ok = all(r["exit"] == 0 for r in results.values())
+    order = ", ".join(order_systems(
+        [s.strip() for s in args.systems.split(",")]))
     lines = [
         "# cmbench report",
         "",
         f"**{'PASS' if ok else 'FAIL'}** · {started} · "
-        f"model `{args.model}` · systems `{args.systems}`",
+        f"model `{args.model}` · run order `{order}`",
         "",
         "## Rig",
         "",
@@ -405,10 +464,10 @@ def render_markdown(root: Path, outdir: Path, results: dict[str, dict],
             ("date (UTC)", started),
             ("platform", f"{_plat.system()} {_plat.release()} ({_plat.machine()})"),
             ("python", _plat.python_version()),
-            ("model", args.model),
+            ("model (ALL systems)", args.model),
             ("reader base URL", args.base_url),
-            ("systems", args.systems),
-            ("suites", ", ".join(results) or "-"),
+            ("run order", order),
+            ("judge", judge_note),
             ("repo", REPO),
         ]),
         "",
@@ -416,127 +475,189 @@ def render_markdown(root: Path, outdir: Path, results: dict[str, dict],
         "",
         f"```bash\npython scripts/cmbench.py --model {args.model} "
         f"--base-url {args.base_url} --systems {args.systems} "
-        f"--suites {','.join(results) or 'dims,bench'} --n {args.n}\n```",
+        f"--suites {','.join(suites_in(results)) or 'dims,bench'} "
+        f"--n {args.n}" + (" --judge" if args.judge else "") + "\n```",
         "",
         "## Summary",
         "",
-        md_table(["Suite", "Status", "Time (s)", "Result"], [
-            (s, "ok" if r["exit"] == 0 else f"exit {r['exit']}",
+        md_table(["Run", "Status", "Time (s)", "Result"], [
+            (k, "ok" if r["exit"] == 0 else f"exit {r['exit']}",
              r["seconds"], r["summary"].replace(" | ", "; "))
-            for s, r in results.items()
+            for k, r in results.items()
         ]),
         "",
     ]
-    for suite, r in results.items():
-        lines += [f"## {suite}", ""]
-        logname = Path(r.get("log", "")).name or f"{suite}.log"
+    # Per-suite detail: per-system keys (dims:X) get System columns.
+    for key, r in results.items():
+        suite = key.split(":")[0]
+        system = key.split(":")[1] if ":" in key else ""
+        title = f"## {suite}" + (f" — {system}" if system else " (lineup)")
+        lines += [title, ""]
+        logname = Path(r.get("log", "")).name or f"{key}.log"
+        blob = _read_log_file(outdir, key)
         if suite == "dims":
-            lines += [md_table(["Dimension", "Score", "Probes"],
-                               parse_dims_rows(_read_log(outdir, suite))), ""]
+            rows = [(system or "?", d, s, n)
+                    for d, s, n in parse_dims_rows(blob)]
+            lines += [md_table(["System", "Dimension", "Score", "Probes"],
+                               rows), ""]
         elif suite == "bench":
-            lines += [md_table(["Kind", "p50 (ms)", "p95 (ms)", "mean (ms)"],
-                               parse_bench_rows(_read_log(outdir, suite))), ""]
+            rows = [(system or "?", k, p50, p95, mean)
+                    for k, p50, p95, mean in parse_bench_rows(blob)]
+            lines += [md_table(["System", "Kind", "p50 (ms)", "p95 (ms)",
+                                "mean (ms)"], rows), ""]
         elif suite == "longmemeval":
             lines += [md_table(["System", "Deterministic", "Judge"],
-                               parse_longmemeval_rows(_read_log(outdir, suite))), ""]
+                               parse_longmemeval_rows(blob)), ""]
         elif suite in ("locomo", "beam"):
             lines += [md_table(["Convo", "System", "Score"],
-                               parse_convo_rows(_read_log(outdir, suite))), ""]
+                               parse_convo_rows(blob)), ""]
         lines += [f"Full log: `{logname}`", ""]
     lines += [
-        "## Datasets",
+        "## Datasets (official sources only)",
         "",
-        md_table(["File", "Size", "Source"],
-                 dataset_provenance(root, list(results))),
+        md_table(["File", "Size", "Official source"],
+                 dataset_provenance(root, suites_in(results))),
+        "",
+        "## Third-party readiness",
+        "",
+        md_table(["System", "Status", "Detail"], readiness),
+        "",
+        "## Bias controls (how this stays honest)",
+        "",
+        "- One rig, one reader model, serial execution — every system sees "
+        "identical sessions in identical order.",
+        "- Official suites share one replay runner and one judge; "
+        f"judge: `{judge_note}`.",
+        "- Third parties use the same reader and the same prompt shape as "
+        "the local engine (only retrieval/storage is theirs).",
+        "- Skipped contenders are reported as skipped with the reason — "
+        "never as zero scores.",
+        "- `dims`/`bench` are ContextMemory harnesses for gaps public "
+        "benchmarks don't cover; they run for EVERY lineup system, and the "
+        "tables above show all of them side-by-side.",
+        "- Do not compare these numbers with other harnesses, judges, "
+        "or dates.",
         "",
         "## Checkpoints",
         "",
-        "- Per-suite logs: `<outdir>/<suite>.log`",
+        "- Per-run logs: `<outdir>/<suite>[-<system>].log`",
         "- Official-run JSONL: `benchmarks/results/`",
         "- This report: `REPORT.md` (here) + `summary.json`",
-        "",
-        "## Caveats",
-        "",
-        "- Same rig, same model for every system in this report; do not "
-        "compare these numbers with other harnesses, judges, or dates.",
-        "- LLM-judged scores use the configured reader as judge unless the "
-        "official GPT judge is used; judge substitution is disclosed per run.",
-        "- `dims`/`bench` are ContextMemory harnesses for gaps public "
-        "benchmarks don't cover (write precision, evolution, forgetting, "
-        "deterministic latency).",
         "",
     ]
     return "\n".join(lines)
 
 
-def _read_log(outdir: Path, suite: str) -> str:
+def suites_in(results: dict[str, dict]) -> list[str]:
+    return list(dict.fromkeys(k.split(":")[0] for k in results))
+
+
+def _read_log_file(outdir: Path, key: str) -> str:
     try:
-        return (outdir / f"{suite}.log").read_text(encoding="utf-8")
+        return (outdir / f"{key.replace(':', '-')}.log").read_text(
+            encoding="utf-8")
     except OSError:
         return ""
 
 
+def _read_log(outdir: Path, suite: str) -> str:
+    return _read_log_file(outdir, suite)
+
+
 def phase_report(root: Path, outdir: Path, results: dict,
-                 args: argparse.Namespace, started: str) -> None:
+                 args: argparse.Namespace, started: str,
+                 readiness: list[tuple[str, str, str]]) -> None:
     log("== phase 5/5: report ==")
+    judge_note = (f"{args.model} (reader-as-judge)" if args.judge
+                  else "deterministic-only (no LLM judge)")
     report = {
         "model": args.model, "base_url": args.base_url,
         "systems": args.systems, "suites": list(results),
-        "started_utc": started,
+        "started_utc": started, "judge": judge_note,
+        "third_party": [{"system": s, "status": st, "detail": d}
+                        for s, st, d in readiness],
         "results": results,
     }
     (outdir / "summary.json").write_text(json.dumps(report, indent=1))
-    md = render_markdown(root, outdir, results, args, started)
+    md = render_markdown(root, outdir, results, args, started, readiness,
+                         judge_note)
     (outdir / "REPORT.md").write_text(md, encoding="utf-8")
     print()
     print("=" * 64)
     print(f"cmbench results  model={args.model}  systems={args.systems}")
     print("=" * 64)
-    for suite, r in results.items():
+    for key, r in results.items():
         mark = "ok " if r["exit"] == 0 else "FAIL"
-        print(f"[{mark}] {suite:<12} {r['seconds']:>7.0f}s  {r['summary']}")
+        print(f"[{mark}] {key:<22} {r['seconds']:>7.0f}s  {r['summary']}")
     print(f"\nmarkdown : {outdir / 'REPORT.md'}")
     print(f"json     : {outdir / 'summary.json'}")
     print("checkpoints from official runs: benchmarks/results/")
     print("=" * 64)
-    log("== phase 5/5: report ==")
-    report = {
-        "model": args.model, "base_url": args.base_url,
-        "systems": args.systems, "suites": list(results),
-        "results": results,
-    }
-    (outdir / "summary.json").write_text(json.dumps(report, indent=1))
-    print()
-    print("=" * 64)
-    print(f"cmbench results  model={args.model}  systems={args.systems}")
-    print("=" * 64)
-    for suite, r in results.items():
-        mark = "ok " if r["exit"] == 0 else "FAIL"
-        print(f"[{mark}] {suite:<12} {r['seconds']:>7.0f}s  {r['summary']}")
-    print(f"\nlogs + checkpoints: {outdir}")
-    print("checkpoints from official runs: benchmarks/results/")
-    print("=" * 64)
 
 
-def maybe_supermemory(root: Path, args: argparse.Namespace) -> None:
-    if not args.with_supermemory:
+def ensure_supermemory_sdk(root: Path, args: argparse.Namespace) -> None:
+    """Best-effort `pip install supermemory` (explicit opt-in = consent)."""
+    try:
+        import supermemory  # noqa: F401
+        log("supermemory package present")
         return
+    except ImportError:
+        pass
+    log("installing supermemory SDK (third-party contender)")
+    cmd = (["uv", "pip", "install", "supermemory"] if shutil.which("uv")
+           else [sys.executable, "-m", "pip", "install", "supermemory",
+                 "--disable-pip-version-check"])
+    if run(cmd, root) != 0:
+        err("supermemory SDK install failed — contender will be skipped")
+
+
+def check_supermemory_ready() -> tuple[bool, str]:
+    """Probe via the repo's own adapter (no side effects, no spend)."""
+    root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(root / "benchmarks"))
+    try:
+        from adapters import probe_supermemory
+    except ImportError as exc:
+        return False, f"adapter missing ({exc})"
+    return probe_supermemory()
+
+
+def maybe_supermemory(root: Path,
+                      args: argparse.Namespace) -> list[tuple[str, str, str]]:
+    """Download supermemory reference + assess lineup readiness.
+
+    Returns readiness rows for the report. Never fakes: not-ready means
+    the run proceeds WITHOUT the contender and says exactly why.
+    """
+    readiness: list[tuple[str, str, str]] = []
     dest = root / "benchmarks" / "supermemory"
-    if not (dest / "README.md").exists():
+    if (dest / "README.md").exists():
+        log("have benchmarks/supermemory (reference clone)")
+    elif args.with_supermemory:
         log("cloning supermemoryai/supermemory (reference, ~200MB)…")
-        rc = run(["git", "clone", "--depth", "1", SUPERMEMORY_REPO, str(dest)],
-                 root)
-        if rc != 0:
-            err("supermemory clone failed — continuing without it")
-            return
+        if run(["git", "clone", "--depth", "1", SUPERMEMORY_REPO, str(dest)],
+               root) != 0:
+            err("supermemory clone failed — reference unavailable")
     else:
-        log("have benchmarks/supermemory")
-    if os.environ.get("SUPERMEMORY_API_KEY"):
-        log("SUPERMEMORY_API_KEY set — wire it into your harness via "
-            "benchmarks/run_official.py --systems (adapter TODO per key)")
+        log("supermemory reference not cloned "
+            "(pass --with-supermemory to fetch it)")
+
+    if args.with_supermemory:
+        ensure_supermemory_sdk(root, args)
+    ready, detail = check_supermemory_ready()
+    if ready:
+        readiness.append(("supermemory", "in lineup", detail))
+        if "supermemory" not in args.systems_list:
+            args.systems_list.append("supermemory")
+            args.systems_list = order_systems(args.systems_list)
+            args.systems = ",".join(args.systems_list)
+            log("supermemory ready — added to the lineup")
     else:
-        log("no SUPERMEMORY_API_KEY — cloud comparison skipped (honest: "
-            "no key, no claim). Local lineup runs regardless.")
+        readiness.append(("supermemory", "skipped", detail))
+        if "supermemory" in args.systems_list:
+            log(f"supermemory requested but not ready ({detail}) — "
+                f"it will fail closed with instructions, not score zeros")
+    return readiness
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -546,10 +667,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--base-url", default="http://localhost:11434")
     p.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY", "EMPTY"))
     p.add_argument("--systems", default="contextmemory,full-history",
-                   help="comma list: contextmemory,full-history,recency-2,recency")
+                   help="comma list: contextmemory,supermemory,full-history,"
+                   "recency-2,recency-10,recency")
     p.add_argument("--suites", default="dims,bench",
                    help="comma list of dims,bench,longmemeval,locomo,beam (or all)")
-    p.add_argument("--n", type=int, default=30, help="longmemeval instances")
+    p.add_argument("--fast", action="store_true", default=True,
+                   help="~10%% subsets for speed (default on)")
+    p.add_argument("--full", action="store_true",
+                   help="full official sets (overrides --fast)")
+    p.add_argument("--n", type=int, default=0,
+                   help="longmemeval instances (0 = preset default)")
     p.add_argument("--judge", action="store_true",
                    help="official-style LLM judge for longmemeval")
     p.add_argument("--locomo-convos", nargs="+", type=int, default=[0, 1])
@@ -572,6 +699,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         if s not in SUITE_ORDER:
             sys.exit(f"unknown suite {s!r} (pick from {SUITE_ORDER})")
     args.suites = [s for s in SUITE_ORDER if s in suites]
+    # Subset presets: --fast (~10% for speed, the default) vs --full.
+    # dims/bench are synthetic and always run whole (they take seconds).
+    if args.full:
+        if args.n <= 0:
+            args.n = 500  # full LongMemEval question set
+        if args.locomo_convos == [0, 1]:
+            args.locomo_convos = list(range(10))  # all 10 conversations
+    else:
+        if args.n <= 0:
+            args.n = 50  # ~10% of the 500 LongMemEval questions
+        if args.locomo_convos == [0, 1]:
+            args.locomo_convos = [0]  # 1/10 conversations
+        if args.beam_convos == [0, 1]:
+            args.beam_convos = [0]  # 1 conversation
+    systems = [s.strip() for s in args.systems.split(",") if s.strip()]
+    if not systems:
+        sys.exit("--systems is empty")
+    args.systems_list = order_systems(systems)
+    args.systems = ",".join(args.systems_list)
     return args
 
 
@@ -585,16 +731,25 @@ def main(argv: list[str] | None = None) -> int:
 
     phase_env(root, args.yes)
     phase_model(args)
-    maybe_supermemory(root, args)
+    readiness = maybe_supermemory(root, args)
+    # Fail fast on typos for the built-in suites: an unknown name must
+    # never silently become somebody else's numbers.
+    if any(s in args.suites for s in ("dims", "bench")):
+        bad = [s for s in args.systems_list if s not in LOCAL_SYSTEMS]
+        if bad:
+            sys.exit(f"unknown system(s) {bad} for dims/bench "
+                     f"(known: {sorted(LOCAL_SYSTEMS)})")
     if "beam" in args.suites and not ensure_pandas(root, args.yes):
         log("pandas declined — dropping beam suite")
         args.suites = [s for s in args.suites if s != "beam"]
     phase_data(root, args.suites)
     if args.check:
-        log("check mode: env + model + data OK, ran nothing")
+        log("check mode: env + model + data + readiness OK, ran nothing")
+        for name, status, detail in readiness:
+            log(f"third-party {name}: {status} ({detail})")
         return 0
-    results = phase_run(args, root, outdir, args.suites)
-    phase_report(root, outdir, results, args, started)
+    results = phase_run(args, root, outdir, args.suites, args.systems_list)
+    phase_report(root, outdir, results, args, started, readiness)
     return 0 if all(r["exit"] == 0 for r in results.values()) else 1
 
 

@@ -57,6 +57,43 @@ MODEL = "qwen2.5:1.5b"
 BASE_URL = "http://localhost:11434"
 RESULTS = Path("benchmarks/results")
 
+def make_third_party(name: str, reader, container_tag: str):
+    """Build a third-party contender or exit (fail closed, never scored).
+
+    Third parties run through the SAME replay runner, SAME reader model,
+    and SAME judge as every local system. Only retrieval/storage is theirs.
+    Import is lazy so the stdlib path never hard-depends on vendor SDKs.
+    """
+    if name == "supermemory":
+        from benchmarks.adapters import SkipError, SupermemorySystem
+
+        try:
+            return SupermemorySystem(reader, container_tag=container_tag)
+        except SkipError as exc:
+            raise SystemExit(
+                f"supermemory skipped (fail closed, not scored): {exc}"
+            ) from exc
+    raise SystemExit(f"unknown third-party system {name!r} "
+                     f"(known: supermemory)")
+
+
+# Explicit lineup resolution. Unknown names exit LOUDLY: the old code
+# silently mapped any typo to a recency baseline, which could print a
+# misleading system label next to recency numbers. No silent fallbacks.
+BASELINES = {"full-history", "recency", "recency-2", "recency-8k"}
+
+
+def resolve_baseline(name: str, reader, *, chars: bool):
+    if name == "full-history":
+        return FullHistorySystem(reader)
+    if name in ("recency", "recency-8k"):
+        return RecencyCharsSystem(reader, max_chars=8000)
+    if name == "recency-2":
+        return RecencyWindowSystem(reader, window=2)
+    raise SystemExit(
+        f"unknown system {name!r} "
+        f"(known: contextmemory, supermemory, {sorted(BASELINES)})")
+
 # --- official BEAM unified judge prompt (replicated from the BEAM repo's
 # src/prompts.py; only the model is substituted: qwen2.5:1.5b for GPT). ---
 BEAM_JUDGE_PROMPT = """You are an expert evaluator tasked with judging whether the LLM's response demonstrates compliance with the specified RUBRIC CRITERION.
@@ -231,8 +268,10 @@ def cmd_beam(args: argparse.Namespace) -> int:
                     embedder=DeterministicHashEmbedder(),
                     container_tag=f"beam-{cid}",
                 )
+            elif name == "supermemory":
+                sys_obj = make_third_party(name, reader, f"sm-beam-{cid}")
             else:
-                sys_obj = RecencyCharsSystem(reader, max_chars=8000)
+                sys_obj = resolve_baseline(name, reader, chars=True)
             t0 = time.perf_counter()
             for s in sessions:
                 sys_obj.ingest(s)
@@ -290,9 +329,9 @@ def cmd_longmemeval(args: argparse.Namespace) -> int:
                 reader, extractor=LLMExtractor(reader),
                 embedder=DeterministicHashEmbedder(),
                 container_tag="eval-official")
-        if name == "full-history":
-            return FullHistorySystem(reader)
-        return RecencyWindowSystem(reader, window=2)
+        if name == "supermemory":
+            return make_third_party(name, reader, "sm-eval-official")
+        return resolve_baseline(name, reader, chars=False)
 
     report: dict = {}
     for name in args.systems:
@@ -368,10 +407,10 @@ def cmd_locomo(args: argparse.Namespace) -> int:
                     reader, extractor=LLMExtractor(reader),
                     embedder=DeterministicHashEmbedder(),
                     container_tag=f"locomo-{ci}")
-            elif name == "full-history":
-                sys_obj = FullHistorySystem(reader)
+            elif name == "supermemory":
+                sys_obj = make_third_party(name, reader, f"sm-locomo-{ci}")
             else:
-                sys_obj = RecencyWindowSystem(reader, window=2)
+                sys_obj = resolve_baseline(name, reader, chars=False)
             t0 = time.perf_counter()
             for s in sessions:
                 sys_obj.ingest(s)

@@ -29,6 +29,21 @@ def test_parse_args_defaults(cm) -> None:
     assert args.model == "qwen3:4b"
     assert args.suites == ["dims", "bench"]
     assert args.timeout == 0.0
+    assert args.n == 50  # fast preset ≈10%
+    assert args.locomo_convos == [0]
+    assert args.beam_convos == [0]
+    assert args.systems_list == ["contextmemory", "full-history"]
+
+
+def test_parse_args_full_preset(cm) -> None:
+    args = cm.parse_args(["--full"])
+    assert args.n == 500
+    assert args.locomo_convos == list(range(10))
+
+
+def test_order_systems(cm) -> None:
+    assert cm.order_systems(["full-history", "supermemory", "contextmemory"]) == [
+        "contextmemory", "supermemory", "full-history"]
 
 
 def test_parse_args_all_and_rejects_unknown(cm) -> None:
@@ -43,10 +58,13 @@ def test_suite_cmd_shapes(cm, tmp_path) -> None:
                           "contextmemory,full-history", "--n", "5"])
     outdir = tmp_path
     assert "dims" in cm.suite_cmd(args, ROOT, outdir, "dims")
-    bench = cm.suite_cmd(args, ROOT, outdir, "bench")
+    bench = cm.suite_cmd(args, ROOT, outdir, "bench", "contextmemory")
     assert bench[-1] == "contextmemory"
     lme = cm.suite_cmd(args, ROOT, outdir, "longmemeval")
     assert "--n" in lme and "--systems" in lme
+    dims_cm = cm.suite_cmd(args, ROOT, outdir, "dims", "contextmemory")
+    dims_fh = cm.suite_cmd(args, ROOT, outdir, "dims", "full-history")
+    assert dims_cm != dims_fh  # per-system runs, no shared numbers
     args_j = cm.parse_args(["--judge"])
     assert "--judge" in cm.suite_cmd(args_j, ROOT, outdir, "longmemeval")
     assert "locomo" in cm.suite_cmd(args, ROOT, outdir, "locomo")
@@ -79,13 +97,18 @@ def test_render_markdown(tmp_path, cm) -> None:
     args = cm.parse_args(["--model", "m", "--suites", "bench"])
     outdir = tmp_path / "rep"
     outdir.mkdir()
-    (outdir / "bench.log").write_text(
+    (outdir / "bench-contextmemory.log").write_text(
         "ingest  p50    0.042 ms  p95    0.066 ms  mean    0.049 ms\n",
         encoding="utf-8")
-    results = {"bench": {"exit": 0, "seconds": 3.0,
-                         "summary": "ingest p50 0.042",
-                         "timed_out": False, "log": str(outdir / "bench.log")}}
-    md = cm.render_markdown(ROOT, outdir, results, args, "2026-09-08 00:00 UTC")
+    results = {"bench:contextmemory": {
+        "exit": 0, "seconds": 3.0, "summary": "ingest p50 0.042",
+        "timed_out": False, "log": str(outdir / "bench-contextmemory.log")}}
+    md = cm.render_markdown(ROOT, outdir, results, args, "2026-09-08 00:00 UTC",
+                            [("supermemory", "skipped", "no key")],
+                            "deterministic-only (no LLM judge)")
     assert "# cmbench report" in md
     assert "0.042" in md
-    assert "## Caveats" in md and "Reproduce:" in md
+    assert "## Caveats" not in md  # renamed section
+    assert "## Bias controls (how this stays honest)" in md
+    assert "no key" in md and "deterministic-only" in md
+    assert "Reproduce:" in md

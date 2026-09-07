@@ -59,63 +59,85 @@ fights you, delete it and re-run `uv sync`.
 
 ## One-command benchmark (any machine, any OS)
 
-One command downloads datasets, installs everything, and runs every
-benchmark **serially with the same model**, streaming progress live and
-writing a portable Markdown report. Windows, macOS, Linux — only git and
-Python 3.11+ required:
+One command downloads everything, installs it, and runs every benchmark
+**serially with the same model** — ContextMemory fully first, then
+Supermemory, then the baselines — streaming progress live and writing a
+portable Markdown report. Windows, macOS, Linux — only git and Python
+3.11+ required:
 
 ```bash
 # Linux / macOS
 git clone https://github.com/RaghavapriyanSaravanapriyan/contextmemory.git \
   && cd contextmemory \
-  && python3 scripts/cmbench.py --model qwen3:4b
+  && python3 scripts/cmbench.py --model qwen3:4b --with-supermemory
 ```
 
 ```powershell
 # Windows (PowerShell)
 git clone https://github.com/RaghavapriyanSaravanapriyan/contextmemory.git;
-  cd contextmemory; py scripts/cmbench.py --model qwen3:4b
+  cd contextmemory; py scripts/cmbench.py --model qwen3:4b --with-supermemory
 ```
 
 ```bash
-# The full gauntlet: every suite, head-to-head lineup, judge on
-python scripts/cmbench.py --model qwen3:4b \
-  --suites all --systems contextmemory,full-history \
-  --n 30 --judge --yes
+# The full gauntlet instead of the default ~10% fast subsets
+python scripts/cmbench.py --model qwen3:4b --with-supermemory \
+  --suites all --systems contextmemory,supermemory,full-history \
+  --full --judge --yes
 ```
 
-What the command does (5 phases, all visible live):
+What the command downloads (official sources only, URLs pinned in
+`scripts/cmbench.py` and verified):
+
+| Download | Official source |
+| --- | --- |
+| LongMemEval oracle + S | `huggingface.co/datasets/xiaowu0162/longmemeval-cleaned` (upstream README) |
+| LoCoMo (10 convos) | `github.com/snap-research/locomo` (`data/locomo10.json`) |
+| BEAM-100K | `huggingface.co/datasets/Mohammadta/BEAM` (CC-BY-SA-4.0) |
+| Supermemory reference | `github.com/supermemoryai/supermemory` (+ official `supermemory` SDK pip) |
+| ContextMemory | this repo (C++ core builds locally) |
+
+What the command runs (5 phases, all visible live):
 
 1. **ENV** — installs ContextMemory incl. the C++ core build.
 2. **MODEL** — probes your reader (Ollama default), pulls `--model` on request.
-3. **DATA** — fetches official datasets with progress (LongMemEval
-   oracle/S, LoCoMo, BEAM-100K; skipped when already present).
-4. **RUN** — `dims → bench → longmemeval → locomo → beam`, every system on
-   the same model, stdout streamed in real time, per-suite logs tee'd.
+3. **DATA** — fetches the table above with progress (skipped when present).
+4. **RUN** — fixed order: `contextmemory` fully first, then `supermemory`,
+   then baselines. `dims` + `bench` run **every** system separately;
+   official suites share one replay runner and one judge.
 5. **REPORT** — `reports/runs/cmbench-<ts>/` with `REPORT.md` (paste it into
-   a PR), `summary.json`, and per-suite logs.
+   a PR), `summary.json`, and per-run logs.
 
 | Flag | Job |
 | --- | --- |
 | `--model / --base-url / --api-key` | the one reader for ALL systems |
-| `--systems` | lineup, e.g. `contextmemory,full-history,recency-2` |
+| `--systems` | lineup (default `contextmemory,full-history`; `supermemory` auto-joins when ready) |
 | `--suites` | `dims,bench,longmemeval,locomo,beam` or `all` |
-| `--n / --locomo-convos / --beam-convos` | subset sizes (default 30 / 0,1 / 0,1) |
-| `--judge` | official-style LLM judge for LongMemEval |
-| `--timeout / --keep-going` | per-suite timeout, don't stop on failure |
-| `--with-supermemory` | clone supermemory for reference; adds it to the lineup when `SUPERMEMORY_API_KEY` is set (no key = cleanly skipped, never faked) |
+| `--fast` (default) / `--full` | ~10% subsets (50 LME Q · 1 LoCoMo convo · 1 BEAM convo) vs full official sets |
+| `--judge` | official-style LLM judge for LongMemEval (judge model recorded in report) |
+| `--timeout / --keep-going` | per-run timeout, don't stop on failure |
+| `--with-supermemory` | clone reference + install SDK; lineup join needs `SUPERMEMORY_API_KEY` |
 | `--check` | install + probe + datasets only, run nothing |
+
+Supermemory runs through `benchmarks/adapters/` on its **official SDK**
+(`add` → poll `documents.get` to done → `search.memories`), answering
+with the **same reader and prompt shape** as our engine. No key/package
+means skipped-with-reason, never zeros.
+
+How this stays unbiased (also printed in every `REPORT.md`): one rig, one
+model, serial order, explicit system names (typos exit loudly), shared
+judge, fail-closed third parties, side-by-side tables for every suite.
 
 `REPORT.md` looks like this (portable, checkable):
 
 ```markdown
 # cmbench report
-**PASS** · 2026-09-08 05:20 UTC · model `qwen3:4b` · systems `contextmemory,full-history`
+**PASS** · 2026-09-08 05:20 UTC · model `qwen3:4b` · run order `contextmemory,supermemory,full-history`
 
-| Suite       | Status | Time (s) | Result                    |
+| Run                  | Status | Time (s) | Result                    |
 |---|---|---|---|
-| bench       | ok     | 0.1      | ingest p50 0.043 ms; answer p50 0.223 ms |
-| longmemeval | ok     | 412.0    | contextmemory: det 0.500  |
+| bench:contextmemory  | ok     | 0.1      | ingest p50 0.043 ms; answer p50 0.202 ms |
+| bench:supermemory    | ok     | 41.0     | ingest p50 812 ms; answer p50 640 ms      |
+| longmemeval          | ok     | 412.0    | contextmemory: det 0.500  |
 ...
 ```
 

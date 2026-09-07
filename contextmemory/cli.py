@@ -24,6 +24,7 @@ import json
 import sys
 from collections.abc import Callable
 from datetime import datetime
+from pathlib import Path
 
 import httpx
 
@@ -53,7 +54,24 @@ _SYSTEMS: dict[str, Callable[[OpenAICompatClient], MemorySystem]] = {
         extractor=LLMExtractor(reader),
         embedder=DeterministicHashEmbedder(),
     ),
+    "supermemory": lambda reader: _supermemory_system(reader),
 }
+
+
+def _supermemory_system(reader) -> MemorySystem:
+    """Third-party contender for dims/bench (fail closed with instructions)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]
+                           / "benchmarks"))
+    try:
+        from adapters import SkipError, SupermemorySystem
+    except ImportError as exc:
+        raise SystemExit(
+            "supermemory adapter missing (benchmarks/adapters/). "
+            f"{exc}") from exc
+    try:
+        return SupermemorySystem(reader, container_tag="sm-eval")
+    except SkipError as exc:
+        raise SystemExit(f"supermemory skipped (fail closed): {exc}") from exc
 
 
 def make_reader(
