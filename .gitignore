@@ -7,8 +7,18 @@ dist/
 build/
 *.egg-info/
 
-# downloaded benchmark datasets (fetched locally, not committed)
-benchmarks/data/*.json
+# Benchmark weight (local-only, never committed):
+# - benchmarks/data/: downloaded datasets (BEAM parquets, oracle JSON, …)
+# - benchmarks/supermemory/: vendored reference clone for static comparison
+# - benchmarks/results/: scratch run outputs (committed evidence → reports/runs/)
+# - benchmarks/memorybench/data + node_modules: harness deps and downloads
+# Tracked: benchmarks/*.py harnesses + memorybench src/framework docs.
+benchmarks/data/
+benchmarks/supermemory/
+benchmarks/results/
+# memorybench is an embedded git repo with local secrets (.env.local);
+# kept as a local-only harness, same as benchmarks/supermemory/.
+benchmarks/memorybench/
 
 # Node & web dependencies
 node_modules/
