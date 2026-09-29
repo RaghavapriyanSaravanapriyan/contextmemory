@@ -203,7 +203,18 @@ def _cmd_dims(args: argparse.Namespace) -> int:
         args.reader_api_base, args.reader_api_key, args.reader_model
     )
     _preflight_reader(reader, args.reader_model, args.reader_api_base)
-    factory = lambda: _SYSTEMS[args.system](reader)  # noqa: E731
+    extract_model = getattr(args, "extract_model", None)
+    if (args.system == "contextmemory" and extract_model
+            and extract_model != args.reader_model):
+        # Same write-path model for both write paths (fairness): our
+        # extractor runs the shared extraction model, not the small reader.
+        xreader = make_reader(
+            args.reader_api_base, args.reader_api_key, extract_model)
+        factory = lambda: CoreMemorySystem(  # noqa: E731
+            reader, extractor=LLMExtractor(xreader),
+            embedder=DeterministicHashEmbedder(), container_tag="dims")
+    else:
+        factory = lambda: _SYSTEMS[args.system](reader)  # noqa: E731
     reports = run_dimensions(default_scenarios(), factory)
     print(f"system:        {args.system}")
     print(f"dimensions:    {sum(r.n_probes for r in reports)} probes")
@@ -536,6 +547,9 @@ def main(argv: list[str] | None = None) -> int:
     p_dims.add_argument("--reader-api-base", required=True)
     p_dims.add_argument("--reader-api-key", default="EMPTY")
     p_dims.add_argument("--reader-model", required=True)
+    p_dims.add_argument("--extract-model", default=None,
+                        help="write-path model for contextmemory's extraction "
+                             "(default: the reader model)")
     p_dims.set_defaults(func=_cmd_dims)
 
     p_bench = sub.add_parser(

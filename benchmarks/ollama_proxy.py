@@ -20,6 +20,7 @@ stdlib only; no dependencies.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -31,6 +32,7 @@ OLLAMA_URL = "http://localhost:11434"
 LISTEN_HOST = "127.0.0.1"
 LISTEN_PORT = 11435
 REASONING_EXTRA = 2048  # headroom so content isn't truncated by a long trace
+DUMP_DIR = os.environ.get("SM_PROXY_DUMP_DIR", "")  # opt-in request/response dump
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -68,6 +70,13 @@ class Handler(BaseHTTPRequestHandler):
 
         payload = dict(body)
         payload["stream"] = False  # force non-streaming upstream
+        # Qwen3-family models burn their whole budget on a hidden reasoning
+        # trace through the OpenAI-compatible layer, and the compat layer
+        # IGNORES `think: false` when `tools` are present (verified). The
+        # native /api/chat endpoint honors think:false together with tools,
+        # so qwen3-family requests are translated to the native protocol.
+        if str(payload.get("model", "")).startswith("qwen3"):
+            return self._native_chat(payload, want_stream, t_msg=first_msg)
 
         # For streaming clients, open the SSE stream immediately (role chunk
         # + keep-alive) so the client never waits on a first byte while the
@@ -102,11 +111,20 @@ class Handler(BaseHTTPRequestHandler):
         first_msg = first_choice.get("message", {}) or {}
         content = first_msg.get("content") or ""
         reasoning = first_msg.get("reasoning") or ""
+        tool_calls = first_msg.get("tool_calls") or []
         latency = round((time.time() - t0) * 1000)
+
+        self._dump(body, data, content, reasoning, tool_calls)
 
         if want_stream:
             return self._stream_response(model, content)
 
+        # Pass tool calls through: extraction pipelines that use function
+        # calling break silently if tool_calls is dropped from the response.
+        message = {"role": "assistant", "content": content}
+        if tool_calls:
+            message["tool_calls"] = tool_calls
+        finish_reason = first_choice.get("finish_reason") or "stop"
         self._json(200, {
             "id": f"chatcmpl-proxy-{int(t0*1000)}",
             "object": "chat.completion",
@@ -114,8 +132,8 @@ class Handler(BaseHTTPRequestHandler):
             "model": model,
             "choices": [{
                 "index": 0,
-                "message": {"role": "assistant", "content": content},
-                "finish_reason": "stop",
+                "message": message,
+                "finish_reason": finish_reason,
             }],
             "usage": {
                 "prompt_tokens": len(json.dumps(messages)) // 4,
@@ -125,6 +143,146 @@ class Handler(BaseHTTPRequestHandler):
             "x_latency_ms": latency,
             "x_reasoning_chars": len(reasoning),
         })
+
+    def _native_chat(self, payload, want_stream, t_msg):
+        """Translate an OpenAI chat request to Ollama's native /api/chat.
+
+        Why: the OpenAI-compatible layer ignores `think: false` when `tools`
+        are present, so qwen3-family models spend minutes on a hidden
+        reasoning trace before (or instead of) the tool call. The native
+        endpoint honors think:false together with tools.
+        """
+        model = payload.get("model", "qwen3:4b")
+        native = {
+            "model": model,
+            "messages": payload.get("messages", []),
+            "stream": False,
+            "think": False,
+            "keep_alive": "10m",
+        }
+        tools = payload.get("tools")
+        if tools:
+            native["tools"] = tools
+            tc = payload.get("tool_choice")
+            if isinstance(tc, str):
+                native["tool_choice"] = tc
+        options = {}
+        if payload.get("temperature") is not None:
+            options["temperature"] = payload["temperature"]
+        if payload.get("max_tokens"):
+            options["num_predict"] = payload["max_tokens"]
+        options["num_ctx"] = payload.get("num_ctx", 8192)
+        if options:
+            native["options"] = options
+        if (payload.get("response_format") or {}).get("type") == "json_object":
+            native["format"] = "json"
+
+        if want_stream:
+            self._open_stream(model)
+        t0 = time.time()
+        print(f"[proxy] forwarding to {OLLAMA_URL}/api/chat "
+              f"(native, think=false, tools={len(tools or [])})", flush=True)
+        req = urllib.request.Request(
+            OLLAMA_URL + "/api/chat",
+            data=json.dumps(native).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=900) as resp:
+                data = json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            print(f"[proxy] upstream HTTP {exc.code}", flush=True)
+            self._json(exc.code, {"error": {"message": exc.read().decode(
+                errors="replace")[:500]}})
+            return
+        except Exception as exc:  # noqa: BLE001
+            print(f"[proxy] upstream error: {exc}", flush=True)
+            self._json(502, {"error": {"message": str(exc)}})
+            return
+        print(f"[proxy] upstream done in {round(time.time() - t0, 1)}s",
+              flush=True)
+
+        message = data.get("message", {}) or {}
+        content = message.get("content") or ""
+        reasoning = message.get("thinking") or ""
+        tool_calls = message.get("tool_calls") or []
+        # Native tool_call arguments are a JSON object; the OpenAI wire
+        # format wants a JSON string. Serialize dicts in place (copy).
+        if tool_calls:
+            fixed = []
+            for tc in tool_calls:
+                tc = dict(tc)
+                fn = dict(tc.get("function") or {})
+                args = fn.get("arguments")
+                if isinstance(args, dict):
+                    fn["arguments"] = json.dumps(args)
+                tc["function"] = fn
+                tc.setdefault("type", "function")
+                tc.setdefault("id", f"call_{int(t0*1000)}_{len(fixed)}")
+                fixed.append(tc)
+            tool_calls = fixed
+        done_reason = data.get("done_reason") or "stop"
+        finish = "tool_calls" if tool_calls else (
+            "length" if done_reason == "length" else "stop")
+
+        self._dump({"model": model, "tools": tools,
+                    "messages": native["messages"]},
+                   {"content": content, "reasoning": reasoning[:2000],
+                    "tool_calls": tool_calls, "finish_reason": finish},
+                   content, reasoning, tool_calls)
+
+        if want_stream:
+            return self._stream_response(model, content)
+
+        message_out = {"role": "assistant", "content": content}
+        if tool_calls:
+            message_out["tool_calls"] = tool_calls
+        self._json(200, {
+            "id": f"chatcmpl-proxy-{int(t0*1000)}",
+            "object": "chat.completion",
+            "created": int(t0),
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "message": message_out,
+                "finish_reason": finish,
+            }],
+            "usage": {
+                "prompt_tokens": data.get("prompt_eval_count", 0),
+                "completion_tokens": data.get("eval_count", 0),
+                "total_tokens": (data.get("prompt_eval_count", 0)
+                                 + data.get("eval_count", 0)),
+            },
+            "x_latency_ms": round((time.time() - t0) * 1000),
+            "x_reasoning_chars": len(reasoning),
+        })
+
+    def _dump(self, body, data, content, reasoning, tool_calls):
+        """Opt-in full dump of one exchange for pipeline diagnosis."""
+        if not DUMP_DIR:
+            return
+        try:
+            os.makedirs(DUMP_DIR, exist_ok=True)
+            ts = time.strftime("%H%M%S") + f"-{int(time.time()*1000)%1000:03d}"
+            with open(f"{DUMP_DIR}/{ts}.json", "w", encoding="utf-8") as fh:
+                json.dump({
+                    "request": {
+                        "model": body.get("model"),
+                        "tools": body.get("tools"),
+                        "tool_choice": body.get("tool_choice"),
+                        "response_format": body.get("response_format"),
+                        "messages": body.get("messages"),
+                    },
+                    "response": {
+                        "content": content,
+                        "reasoning": reasoning[:2000],
+                        "tool_calls": tool_calls,
+                        "finish_reason": (data.get("choices") or [{}])[0].get(
+                            "finish_reason"),
+                    },
+                }, fh, indent=1)
+        except OSError:
+            pass
 
     def _open_stream(self, model):
         self.send_response(200)

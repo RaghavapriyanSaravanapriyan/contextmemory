@@ -101,7 +101,7 @@ def test_ingest_polls_to_done_and_scopes_container(monkeypatch) -> None:
     sys_.ingest(Session(session_id="s9", timestamp=datetime.now(UTC),
                         turns=[Turn(role="user", content="I live in Seattle.")]))
     assert client.added[0]["container_tag"] == "sm-probe-9"
-    assert client.added[0]["customId"] == "s9"
+    assert client.added[0]["custom_id"] == "s9"
     assert "user: I live in Seattle." in client.added[0]["content"]
 
 
@@ -125,7 +125,7 @@ def test_answer_uses_same_reader_and_abstains(monkeypatch) -> None:
                                                           datetime.now(UTC))
 
 
-def test_ingest_timeout_fails_closed(monkeypatch) -> None:
+def test_ingest_timeout_is_soft_and_counted(monkeypatch, capsys) -> None:
     class _Slow(_FakeClient):
         def get(self, doc_id):
             return _FakeDoc(id=doc_id, status="dreaming")
@@ -135,6 +135,37 @@ def test_ingest_timeout_fails_closed(monkeypatch) -> None:
                              ingest_timeout_s=0.01, poll_interval_s=0.005)
     from contextmemory.eval.protocol import Session, Turn
 
-    with pytest.raises(SkipError, match="timed out"):
-        sys_.ingest(Session(session_id="s", timestamp=datetime.now(UTC),
-                            turns=[Turn(role="user", content="hi")]))
+    # A self-hosted document that never reaches `done` must NOT abort the
+    # whole contender: the run continues, the event is counted, and the
+    # reason is printed (honest, not silently dropped).
+    sys_.ingest(Session(session_id="s", timestamp=datetime.now(UTC),
+                        turns=[Turn(role="user", content="hi")]))
+    assert sys_.ingest_timeouts == 1
+    assert "continuing" in capsys.readouterr().out
+
+
+def test_ingest_failed_status_recovers_via_grace(monkeypatch) -> None:
+    class _Flaky(_FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def get(self, doc_id):
+            self.calls += 1
+            if self.calls <= 2:
+                return _FakeDoc(id=doc_id, status="failed")
+            return _FakeDoc(id=doc_id, status="done")
+
+    client = _Flaky()
+    _install_fake(monkeypatch, client)
+    sys_ = SupermemorySystem(reader=_Reader(), container_tag="t",
+                             ingest_timeout_s=5.0, poll_interval_s=0.001,
+                             failed_grace_s=5.0)
+    from contextmemory.eval.protocol import Session, Turn
+
+    # A transient `failed` (their agent budget + cron retry) that later
+    # reports `done` counts as a success, not a failure.
+    sys_.ingest(Session(session_id="s", timestamp=datetime.now(UTC),
+                        turns=[Turn(role="user", content="hi")]))
+    assert sys_.ingest_failed >= 1
+    assert sys_.ingest_timeouts == 0

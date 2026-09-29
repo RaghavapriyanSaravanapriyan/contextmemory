@@ -377,29 +377,42 @@ def suite_cmd(args: argparse.Namespace, root: Path, outdir: Path,
             "--reader-api-key", args.api_key, "--reader-model", args.model]
     if suite == "dims":
         # Zero-bias rule: EVERY system runs the same scenarios, same reader.
-        return [py, "-m", "contextmemory.cli", "dims", "--system", system,
-                *base]
+        cmd = [py, "-m", "contextmemory.cli", "dims", "--system", system,
+               *base]
+        if getattr(args, "extract_model", ""):
+            cmd += ["--extract-model", args.extract_model]
+        return cmd
     if suite == "bench":
         # Deterministic latency, per system (null reader, no model).
-        return [py, "-m", "contextmemory.cli", "bench", "--system", system]
+        cmd = [py, "-m", "contextmemory.cli", "bench", "--system", system,
+               "--sessions", str(args.bench_sessions)]
+        return cmd
     if suite == "longmemeval":
         systems = [s.strip() for s in args.systems.split(",")]
         # run_official handles multi-system lineups on one rig
         cmd = [py, "benchmarks/run_official.py", "longmemeval",
                "--n", str(args.n), "--systems", *systems]
+        if getattr(args, "extract_model", ""):
+            cmd += ["--extract-model", args.extract_model]
         if args.judge:
             cmd.append("--judge")
         return cmd
     if suite == "locomo":
         systems = [s.strip() for s in args.systems.split(",")]
-        return [py, "benchmarks/run_official.py", "locomo",
-                "--convos", *[str(c) for c in args.locomo_convos],
-                "--systems", *systems]
+        cmd = [py, "benchmarks/run_official.py", "locomo",
+               "--convos", *[str(c) for c in args.locomo_convos],
+               "--systems", *systems]
+        if getattr(args, "extract_model", ""):
+            cmd += ["--extract-model", args.extract_model]
+        return cmd
     if suite == "beam":
         systems = [s.strip() for s in args.systems.split(",")]
-        return [py, "benchmarks/run_official.py", "beam",
-                "--convos", *[str(c) for c in args.beam_convos],
-                "--systems", *systems]
+        cmd = [py, "benchmarks/run_official.py", "beam",
+               "--convos", *[str(c) for c in args.beam_convos],
+               "--systems", *systems]
+        if getattr(args, "extract_model", ""):
+            cmd += ["--extract-model", args.extract_model]
+        return cmd
     raise ValueError(suite)
 
 
@@ -631,11 +644,14 @@ def render_markdown(root: Path, outdir: Path, results: dict[str, dict],
               + (f" · SKIPPED: {', '.join(skipped_tp)}" if skipped_tp else "")
               + (" · (all requested contenders ran)" if not skipped_tp else
                  " · (skipped contenders scored NOTHING — see readiness)"))
+    extract = (getattr(args, "extract_model", "") or "").strip()
     lines = [
         "# cmbench report",
         "",
         f"**{'PASS' if ok else 'FAIL'}** · {started} · "
-        f"model `{args.model}` · run order `{order}`{skip_note}",
+        f"model `{args.model}`" +
+        (f" · extract `{extract}`" if extract else "") +
+        f" · run order `{order}`{skip_note}",
         "",
         f"> {banner}",
         "",
@@ -646,6 +662,8 @@ def render_markdown(root: Path, outdir: Path, results: dict[str, dict],
             *sys_metrics(),
             ("python", _plat.python_version()),
             ("model (ALL systems)", args.model),
+            ("extract model (ALL write paths)",
+             extract or f"{args.model} (same as reader)"),
             ("reader base URL", args.base_url),
             ("run order", order),
             ("judge", judge_note),
@@ -654,10 +672,12 @@ def render_markdown(root: Path, outdir: Path, results: dict[str, dict],
         "",
         "Reproduce:",
         "",
-        f"```bash\npython scripts/cmbench.py --model {args.model} "
-        f"--base-url {args.base_url} --systems {args.systems} "
-        f"--suites {','.join(suites_in(results)) or 'dims,bench'} "
-        f"--n {args.n}" + (" --judge" if args.judge else "") + "\n```",
+        ("```bash\npython scripts/cmbench.py --model " + args.model + " "
+         + (f"--extract-model {extract} " if extract else "")
+         + f"--base-url {args.base_url} --systems {args.systems} "
+         f"--suites {','.join(suites_in(results)) or 'dims,bench'} "
+         f"--n {args.n} --bench-sessions {args.bench_sessions}"
+         + (" --judge" if args.judge else "") + "\n```"),
         "",
         "## Summary",
         "",
@@ -753,8 +773,10 @@ def phase_report(root: Path, outdir: Path, results: dict,
     dropped = dropped or []
     judge_note = (f"{args.model} (reader-as-judge)" if args.judge
                   else "deterministic-only (no LLM judge)")
+    extract = (getattr(args, "extract_model", "") or "").strip()
     report = {
         "model": args.model, "base_url": args.base_url,
+        "extract_model": extract or args.model,
         "systems": args.systems, "suites": list(results),
         "skipped_suites": dropped,
         "started_utc": started, "judge": judge_note,
@@ -909,6 +931,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="One-command memory benchmarks: same rig, same model.")
     p.add_argument("--model", default="qwen3:4b", help="reader model for ALL systems")
+    p.add_argument("--extract-model", default="",
+                   help="write-path model shared by every contender's "
+                   "extraction (default: same as --model)")
+    p.add_argument("--bench-sessions", type=int, default=200,
+                   help="synthetic ingest sessions for the bench suite")
     p.add_argument("--base-url", default="http://localhost:11434")
     p.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY", "EMPTY"))
     p.add_argument("--systems", default="contextmemory,full-history",

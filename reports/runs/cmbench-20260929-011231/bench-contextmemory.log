@@ -1,0 +1,4 @@
+system:        contextmemory
+workload:      30 sessions, 4 probes
+ingest  p50    0.045 ms  p95    0.084 ms  mean    0.055 ms  (n=30)
+answer  p50    0.164 ms  p95    0.235 ms  mean    0.161 ms  (n=4)

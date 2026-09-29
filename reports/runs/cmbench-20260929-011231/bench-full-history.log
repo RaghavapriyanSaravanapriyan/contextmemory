@@ -1,0 +1,4 @@
+system:        full-history
+workload:      30 sessions, 4 probes
+ingest  p50    0.000 ms  p95    0.000 ms  mean    0.000 ms  (n=30)
+answer  p50    0.025 ms  p95    0.056 ms  mean    0.032 ms  (n=4)

@@ -1,0 +1,28 @@
+{
+ "model": "qwen2.5:1.5b",
+ "base_url": "http://localhost:11434",
+ "extract_model": "qwen2.5:7b",
+ "systems": "contextmemory,supermemory",
+ "suites": [
+  "locomo"
+ ],
+ "skipped_suites": [],
+ "started_utc": "2026-09-29 07:23 UTC",
+ "judge": "deterministic-only (no LLM judge)",
+ "third_party": [
+  {
+   "system": "supermemory",
+   "status": "in lineup",
+   "detail": "ready (supermemory 3.62.0, self-hosted at http://localhost:6767)"
+  }
+ ],
+ "results": {
+  "locomo": {
+   "exit": 1,
+   "seconds": 2134.6,
+   "summary": "convo 0 contextmemory: 32/199=0.161",
+   "timed_out": false,
+   "log": "/home/raghav/Desktop/contextmemory/reports/runs/cmbench-20260929-072335/locomo.log"
+  }
+ }
+}

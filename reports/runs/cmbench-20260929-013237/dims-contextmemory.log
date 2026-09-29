@@ -1,0 +1,31 @@
+system:        contextmemory
+dimensions:    13 probes
+evolution overall: 0.4000 (5 probes)
+  [ok  ] Where does the user currently work? 
+       hyp: The user currently works at Globex.
+  [ok  ] What is the user's current job title? 
+       hyp: The user's current job title is senior product manager.
+  [FAIL] Where did the user work before joining Globex? 
+       hyp: The user worked at Acme before joining Globex.
+  [FAIL] What was the user's job title at Acme? 
+       hyp: The user's job title at Acme was senior product manager.
+  [FAIL] Where does the user work? 
+       hyp: The user works at Acme.
+forgetting overall: 0.3333 (3 probes)
+  [FAIL] What is the user's name? 
+       hyp: Based on the memories provided, there is no information given about the user's name. Therefore, I cannot answer this que
+  [ok  ] What city does the user currently live in? 
+       hyp: Chicago.
+  [FAIL] What city did the user previously live in? 
+       hyp: The user previously lived in Chicago.
+write-precision overall: 1.0000 (5 probes)
+  [ok  ] What city did the user move to? 
+       hyp: The user moved to Austin.
+  [ok  ] What is the user's favorite hobby? 
+       hyp: The user's favorite hobby is trail running.
+  [ok  ] What is the user's pet's name? (abstain)
+       hyp: Based on the provided information, there is no mention of a pet or its name. Therefore, I cannot answer this question wi
+  [ok  ] What year did the user graduate college? (abstain)
+       hyp: Based on the provided information, there is no mention of the user's graduation year from college. Therefore, I cannot a
+  [ok  ] What is the user's favorite food? (abstain)
+       hyp: There are no memories indicating the user's favorite food.

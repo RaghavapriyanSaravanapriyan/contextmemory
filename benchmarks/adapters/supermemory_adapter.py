@@ -29,7 +29,16 @@ Fairness rules enforced here:
    Polling time is reported, not hidden.
 
 Requires: ``pip install supermemory`` + ``SUPERMEMORY_API_KEY``.
-Without either, construction raises ``SkipError`` (fail closed).
+
+Two modes, both fail closed without their prerequisites:
+
+* **Cloud** (default): official SDK, key from ``SUPERMEMORY_API_KEY``.
+* **Self-hosted**: ``SUPERMEMORY_BASE_URL`` (their self-hosted server, e.g.
+  ``http://localhost:6767``) + the API key that binary prints on first boot
+  (also in ``SUPERMEMORY_API_KEY``). The SDK speaks the same API either way
+  — only ``base_url`` differs (their docs: "Point any Supermemory SDK at
+  it with a one-line change"). Self-hosted ingest is slower (local
+  extraction pipeline), so the ingest poll timeout is raised.
 """
 
 from __future__ import annotations
@@ -70,7 +79,10 @@ def probe_supermemory() -> tuple[bool, str]:
         version = getattr(_sm, "__version__", "unknown")
     except Exception:
         version = "unknown"
-    return True, f"ready (supermemory {version}, key present)"
+    base = os.environ.get("SUPERMEMORY_BASE_URL", "").strip()
+    if base:
+        return True, (f"ready (supermemory {version}, self-hosted at {base})")
+    return True, f"ready (supermemory {version}, cloud API)"
 
 
 class SupermemorySystem:
@@ -82,8 +94,9 @@ class SupermemorySystem:
         *,
         container_tag: str = "sm-eval",
         top_k: int = 8,
-        ingest_timeout_s: float = 120.0,
+        ingest_timeout_s: float | None = None,
         poll_interval_s: float = 1.5,
+        failed_grace_s: float = 420.0,
     ) -> None:
         if not os.environ.get("SUPERMEMORY_API_KEY"):
             raise SkipError(f"no key ({KEY_HINT})")
@@ -94,12 +107,27 @@ class SupermemorySystem:
         self._reader = reader
         self._container = container_tag
         self._top_k = top_k
+        # Self-hosted extraction is slower (local LLM pipeline behind the
+        # same poll, and their own agent budget runs ~660s on big docs):
+        # give it a wider budget than the fast cloud path.
+        if ingest_timeout_s is None:
+            base = os.environ.get("SUPERMEMORY_BASE_URL", "").strip()
+            ingest_timeout_s = 1200.0 if base else 120.0
         self._timeout = ingest_timeout_s
         self._poll = poll_interval_s
-        # No-arg constructor, exactly as Supermemory's own quickstart.
-        self._client = Supermemory()
+        self._grace = failed_grace_s
+        # Same constructor their quickstart uses, plus base_url when the
+        # self-hosted server is the target (their documented one-line
+        # change: baseURL -> local port).
+        base = os.environ.get("SUPERMEMORY_BASE_URL", "").strip()
+        if base:
+            self._client = Supermemory(
+                api_key=os.environ["SUPERMEMORY_API_KEY"], base_url=base)
+        else:
+            self._client = Supermemory()
         self.ingest_waits = 0
         self.ingest_timeouts = 0
+        self.ingest_failed = 0
 
     # --- write path ------------------------------------------------------
 
@@ -112,26 +140,44 @@ class SupermemorySystem:
         res = self._client.add(
             content=transcript,
             container_tag=self._container,
-            customId=session.session_id,
+            custom_id=session.session_id,
         )
         doc_id = getattr(res, "id", None)
         if doc_id is None:
             return
         # Their stack dreams asynchronously: poll to done like their own
         # quickstart's waitUntilDone (status done / failed / timeout).
+        #
+        # A self-hosted `failed` is SOFT: their memory agent has an internal
+        # ~270s budget, and their own cron re-runs the document minutes
+        # later (observed: 0 memories -> 15 memories). So on `failed` we
+        # keep polling through a grace window instead of aborting the
+        # whole contender; a document that never recovers is counted and
+        # the run continues (the read path then simply misses that memory,
+        # which is the honest outcome rather than a hard system failure).
         start = time.monotonic()
-        while time.monotonic() - start < self._timeout:
+        deadline = start + self._timeout
+        grace_until = None
+        while time.monotonic() < deadline:
             doc = self._client.documents.get(doc_id)
             status = getattr(doc, "status", None)
             if status == "done":
                 return
             if status == "failed":
-                raise SkipError(f"supermemory ingest failed for {doc_id}")
+                self.ingest_failed += 1
+                if grace_until is None:
+                    grace_until = time.monotonic() + self._grace
+                elif time.monotonic() > grace_until:
+                    print(f"  [supermemory] doc {doc_id} still failed after "
+                          f"grace; continuing (its cron may still recover it)",
+                          flush=True)
+                    return
+            else:
+                grace_until = None
             time.sleep(self._poll)
         self.ingest_timeouts += 1
-        raise SkipError(
-            f"supermemory ingest timed out after {self._timeout}s ({doc_id})"
-        )
+        print(f"  [supermemory] ingest poll budget exhausted for {doc_id} "
+              f"after {self._timeout}s; continuing", flush=True)
 
     # --- read path (same reader, same prompt shape as our engine) --------
 

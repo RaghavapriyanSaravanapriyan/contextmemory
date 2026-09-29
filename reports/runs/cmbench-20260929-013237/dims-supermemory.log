@@ -1,0 +1,31 @@
+system:        supermemory
+dimensions:    13 probes
+evolution overall: 1.0000 (5 probes)
+  [ok  ] Where does the user currently work? 
+       hyp: The user currently works at Globex.
+  [ok  ] What is the user's current job title? 
+       hyp: The user's current job title is senior product manager.
+  [ok  ] Where did the user work before joining Globex? 
+       hyp: The user worked at Acme Corp before joining Globex.
+  [ok  ] What was the user's job title at Acme? 
+       hyp: The user's job title at Acme was senior software engineer.
+  [ok  ] Where does the user work? 
+       hyp: The user works at Acme Corp.
+forgetting overall: 0.3333 (3 probes)
+  [ok  ] What is the user's name? 
+       hyp: Sarah.
+  [FAIL] What city does the user currently live in? 
+       hyp: The user currently lives in Austin.
+  [FAIL] What city did the user previously live in? 
+       hyp: The user previously lived in Austin.
+write-precision overall: 1.0000 (5 probes)
+  [ok  ] What city did the user move to? 
+       hyp: The user moved to Austin.
+  [ok  ] What is the user's favorite hobby? 
+       hyp: The user's favorite hobby is trail running.
+  [ok  ] What is the user's pet's name? (abstain)
+       hyp: I don't have enough information in memory to answer this question. The memories I have do not cover: What is the user's 
+  [ok  ] What year did the user graduate college? (abstain)
+       hyp: I don't have enough information in memory to answer this question. The memories I have do not cover: What year did the u
+  [ok  ] What is the user's favorite food? (abstain)
+       hyp: I don't have enough information in memory to answer this question. The memories I have do not cover: What is the user's 

@@ -1,0 +1,25 @@
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/raghav/Desktop/contextmemory/contextmemory/cli.py", line 669, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/home/raghav/Desktop/contextmemory/contextmemory/cli.py", line 665, in main
+    return args.func(args)
+           ~~~~~~~~~^^^^^^
+  File "/home/raghav/Desktop/contextmemory/contextmemory/cli.py", line 238, in _cmd_bench
+    report = bench_latency(
+        factory,
+    ...<2 lines>...
+        seed=args.seed,
+    )
+  File "/home/raghav/Desktop/contextmemory/contextmemory/eval/latency.py", line 138, in bench_latency
+    system.ingest(session)
+    ~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/raghav/Desktop/contextmemory/benchmarks/adapters/supermemory_adapter.py", line 136, in ingest
+    res = self._client.add(
+        content=transcript,
+        container_tag=self._container,
+        customId=session.session_id,
+    )
+TypeError: Supermemory.add() got an unexpected keyword argument 'customId'. Did you mean 'custom_id'?

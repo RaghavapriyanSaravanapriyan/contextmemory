@@ -243,6 +243,22 @@ def make_reader(num_ctx: int = 2048) -> OllamaChatClient:
     return r
 
 
+def make_extractor(extract_model: str) -> OllamaChatClient:
+    """Write-path client (extraction) — may differ from the reader model.
+
+    Rig fairness rule: the SAME model drives the write path of EVERY
+    contender (contextmemory's LLMExtractor and third parties' extraction
+    pipeline). On CPU-only rigs the reader stays small/fast while the
+    write path gets the strongest local model both sides can share.
+    """
+    m = extract_model or MODEL
+    r = OllamaChatClient(BASE_URL, m, timeout=900.0, max_tokens=1536,
+                         num_ctx=8192)
+    if m != MODEL:
+        r.warm()
+    return r
+
+
 def _preflight(reader, model: str = MODEL, base_url: str = BASE_URL) -> None:
     """Ping the reader before a costly official run (fail fast, no traceback)."""
     try:
@@ -286,7 +302,8 @@ def cmd_beam(args: argparse.Namespace) -> int:
         for name in systems:
             if name == "contextmemory":
                 sys_obj = CoreMemorySystem(
-                    reader, extractor=LLMExtractor(reader),
+                    reader, extractor=LLMExtractor(
+                        make_extractor(getattr(args, "extract_model", None))),
                     embedder=DeterministicHashEmbedder(),
                     container_tag=f"beam-{cid}",
                 )
@@ -349,7 +366,8 @@ def cmd_longmemeval(args: argparse.Namespace) -> int:
     def factory(name: str):
         if name == "contextmemory":
             return CoreMemorySystem(
-                reader, extractor=LLMExtractor(reader),
+                reader, extractor=LLMExtractor(
+                    make_extractor(getattr(args, "extract_model", None))),
                 embedder=DeterministicHashEmbedder(),
                 container_tag="eval-official")
         if name == "supermemory":
@@ -433,7 +451,8 @@ def cmd_locomo(args: argparse.Namespace) -> int:
         for name in args.systems:
             if name == "contextmemory":
                 sys_obj = CoreMemorySystem(
-                    reader, extractor=LLMExtractor(reader),
+                    reader, extractor=LLMExtractor(
+                        make_extractor(getattr(args, "extract_model", None))),
                     embedder=DeterministicHashEmbedder(),
                     container_tag=f"locomo-{ci}")
             elif name == "supermemory":
@@ -481,6 +500,9 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--convos", nargs="+", type=int, default=[0, 1])
     b.add_argument("--systems", nargs="+",
                    default=["contextmemory", "recency"])
+    b.add_argument("--extract-model", default=None,
+                   help="write-path model for every contender's extraction "
+                        "(default: the reader model)")
     b.set_defaults(func=cmd_beam)
 
     lv = sub.add_parser("longmemeval", help="official oracle replay + judge")
@@ -488,12 +510,18 @@ def main(argv: list[str] | None = None) -> int:
     lv.add_argument("--systems", nargs="+",
                     default=["contextmemory", "full-history", "recency-2"])
     lv.add_argument("--judge", action="store_true")
+    lv.add_argument("--extract-model", default=None,
+                    help="write-path model for every contender's extraction "
+                         "(default: the reader model)")
     lv.set_defaults(func=cmd_longmemeval)
 
     m = sub.add_parser("locomo", help="official locomo10 full-QA replay")
     m.add_argument("--convos", nargs="+", type=int, default=[0, 1, 2])
     m.add_argument("--systems", nargs="+",
                    default=["contextmemory", "full-history", "recency-2"])
+    m.add_argument("--extract-model", default=None,
+                   help="write-path model for every contender's extraction "
+                        "(default: the reader model)")
     m.set_defaults(func=cmd_locomo)
 
     args = p.parse_args(argv)

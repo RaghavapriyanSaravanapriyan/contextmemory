@@ -1,0 +1,88 @@
+{
+ "note": "LoCoMo official convo 0, all 199 QA, deterministic containment + abstention probes. Commit-friendly copy of benchmarks/results/locomo_*.jsonl (that dir is gitignored).",
+ "rig": {
+  "reader": "qwen2.5:1.5b",
+  "extract": "qwen2.5:7b",
+  "supermemory": "supermemory-server v0.0.8 self-hosted, SDK 3.62.0, local Xenova/bge-base-en-v1.5 embeddings"
+ },
+ "systems": {
+  "contextmemory": {
+   "overall": [
+    37,
+    199,
+    0.1859
+   ],
+   "multi_hop_qa_cat1_4": [
+    10,
+    152,
+    0.0658
+   ],
+   "adversarial_cat5": [
+    27,
+    47,
+    0.5745
+   ],
+   "per_category_ok_of_n": {
+    "2": [
+     0,
+     37
+    ],
+    "3": [
+     1,
+     13
+    ],
+    "1": [
+     4,
+     32
+    ],
+    "4": [
+     5,
+     70
+    ],
+    "5": [
+     27,
+     47
+    ]
+   }
+  },
+  "supermemory": {
+   "overall": [
+    22,
+    199,
+    0.1106
+   ],
+   "multi_hop_qa_cat1_4": [
+    11,
+    152,
+    0.0724
+   ],
+   "adversarial_cat5": [
+    11,
+    47,
+    0.234
+   ],
+   "per_category_ok_of_n": {
+    "2": [
+     0,
+     37
+    ],
+    "3": [
+     3,
+     13
+    ],
+    "1": [
+     4,
+     32
+    ],
+    "4": [
+     4,
+     70
+    ],
+    "5": [
+     11,
+     47
+    ]
+   }
+  }
+ }
+}

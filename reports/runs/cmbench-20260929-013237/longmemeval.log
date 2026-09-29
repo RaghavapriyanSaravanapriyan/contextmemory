@@ -1,0 +1,22 @@
+12 instances
+  contextmemory: det 0.000 judge 0.0833
+Traceback (most recent call last):
+  File "/home/raghav/Desktop/contextmemory/benchmarks/run_official.py", line 532, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/home/raghav/Desktop/contextmemory/benchmarks/run_official.py", line 528, in main
+    return args.func(args)
+           ~~~~~~~~~^^^^^^
+  File "/home/raghav/Desktop/contextmemory/benchmarks/run_official.py", line 380, in cmd_longmemeval
+    results = replay(subset, lambda n=name: factory(n), progress=False)
+  File "/home/raghav/Desktop/contextmemory/contextmemory/eval/runner.py", line 72, in replay
+    results.append(replay_instance(instance, system))
+                   ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/home/raghav/Desktop/contextmemory/contextmemory/eval/runner.py", line 46, in replay_instance
+    system.ingest(session)
+    ~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/raghav/Desktop/contextmemory/benchmarks/adapters/supermemory_adapter.py", line 156, in ingest
+    raise SkipError(
+        f"supermemory ingest timed out after {self._timeout}s ({doc_id})"
+    )
+benchmarks.adapters.supermemory_adapter.SkipError: supermemory ingest timed out after 600.0s (ek9ffZTvGP91mPy4GMKYE4)

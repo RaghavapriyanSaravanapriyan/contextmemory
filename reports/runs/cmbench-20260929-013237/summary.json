@@ -1,0 +1,76 @@
+{
+ "model": "qwen2.5:1.5b",
+ "base_url": "http://localhost:11434",
+ "extract_model": "qwen2.5:7b",
+ "systems": "contextmemory,supermemory,full-history",
+ "suites": [
+  "dims:contextmemory",
+  "dims:supermemory",
+  "dims:full-history",
+  "bench:contextmemory",
+  "bench:supermemory",
+  "bench:full-history",
+  "longmemeval"
+ ],
+ "skipped_suites": [],
+ "started_utc": "2026-09-29 01:32 UTC",
+ "judge": "qwen2.5:1.5b (reader-as-judge)",
+ "third_party": [
+  {
+   "system": "supermemory",
+   "status": "in lineup",
+   "detail": "ready (supermemory 3.62.0, self-hosted at http://localhost:6767)"
+  }
+ ],
+ "results": {
+  "dims:contextmemory": {
+   "exit": 0,
+   "seconds": 1293.7,
+   "summary": "evolution overall: 0.4000 (5 probes) | forgetting overall: 0.3333 (3 probes) | write-precision overall: 1.0000 (5 probes)",
+   "timed_out": false,
+   "log": "/home/raghav/Desktop/contextmemory/reports/runs/cmbench-20260929-013237/dims-contextmemory.log"
+  },
+  "dims:supermemory": {
+   "exit": 0,
+   "seconds": 1780.9,
+   "summary": "evolution overall: 1.0000 (5 probes) | forgetting overall: 0.3333 (3 probes) | write-precision overall: 1.0000 (5 probes)",
+   "timed_out": false,
+   "log": "/home/raghav/Desktop/contextmemory/reports/runs/cmbench-20260929-013237/dims-supermemory.log"
+  },
+  "dims:full-history": {
+   "exit": 0,
+   "seconds": 25.0,
+   "summary": "evolution overall: 0.8000 (5 probes) | forgetting overall: 1.0000 (3 probes) | write-precision overall: 0.6000 (5 probes)",
+   "timed_out": false,
+   "log": "/home/raghav/Desktop/contextmemory/reports/runs/cmbench-20260929-013237/dims-full-history.log"
+  },
+  "bench:contextmemory": {
+   "exit": 0,
+   "seconds": 0.1,
+   "summary": "ingest  p50    0.045 ms  p95    0.081 ms  mean    0.054 ms  (n=30) | answer  p50    0.159 ms  p95    0.224 ms  mean    0.155 ms  (n=4)",
+   "timed_out": false,
+   "log": "/home/raghav/Desktop/contextmemory/reports/runs/cmbench-20260929-013237/bench-contextmemory.log"
+  },
+  "bench:supermemory": {
+   "exit": 0,
+   "seconds": 4965.5,
+   "summary": "ingest  p50 131987.061 ms  p95 340346.073 ms  mean 165503.754 ms  (n=30) | answer  p50   35.439 ms  p95   42.978 ms  mean   37.038 ms  (n=4)",
+   "timed_out": false,
+   "log": "/home/raghav/Desktop/contextmemory/reports/runs/cmbench-20260929-013237/bench-supermemory.log"
+  },
+  "bench:full-history": {
+   "exit": 0,
+   "seconds": 0.1,
+   "summary": "ingest  p50    0.000 ms  p95    0.000 ms  mean    0.000 ms  (n=30) | answer  p50    0.025 ms  p95    0.058 ms  mean    0.033 ms  (n=4)",
+   "timed_out": false,
+   "log": "/home/raghav/Desktop/contextmemory/reports/runs/cmbench-20260929-013237/bench-full-history.log"
+  },
+  "longmemeval": {
+   "exit": 1,
+   "seconds": 6998.6,
+   "summary": "contextmemory: det 0.000 judge 0.0833",
+   "timed_out": false,
+   "log": "/home/raghav/Desktop/contextmemory/reports/runs/cmbench-20260929-013237/longmemeval.log"
+  }
+ }
+}

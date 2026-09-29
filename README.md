@@ -284,18 +284,39 @@ Frontier instruments: **LoCoMo** (near-saturated regression test),
 public benchmark covers (write precision, evolution, forgetting,
 deterministic latency). See `docs/research/frontier-memory-benchmarks.md`.
 
-Measured here (CPU-only rig, deterministic):
+### Head-to-head vs Supermemory, self-hosted, CPU-only (2026-09-29)
 
-- `bench`: ingest p50 ~0.05 ms · answer p50 ~0.17 ms
-- `dims` + full-history reader (qwen2.5:1.5b): evolution 0.80 ·
-  forgetting 1.00 · write-precision 0.60
+Full run + judgement: `reports/runs/2026-09-29-cpu-head-to-head-supermemory.md`.
+One rig (Ryzen 7 5700G, no GPU), reader + judge `qwen2.5:1.5b`, **the same
+extraction model (`qwen2.5:7b`) driving both write paths**, Supermemory run
+from its own `supermemory-server` release behind the official SDK.
 
-Not claimed: LLM-judged leaderboard scores. Our one-rig harness
-(`benchmarks/run_official.py`: BEAM + LongMemEval + LoCoMo, identical
-reader) is the instrument for head-to-heads — run it before believing
-any comparison, including ours. Published vendor numbers (Supermemory
-#1 LongMemEval/LoCoMo/ConvoMem; Mem0 92.5/94.4/64.1/48.6) are
-self-reported on different harnesses and are not head-to-head with us.
+| Suite | contextmemory | supermemory | full-history |
+|---|---|---|---|
+| LongMemEval (n=12, LLM judge) | 0.083 | **0.167** | **0.667** |
+| LoCoMo (convo 0, 199 QA) | **0.186** | 0.111 | — |
+| …of which multi-hop QA | 0.066 | 0.072 | — |
+| …of which adversarial/abstain | **0.574** | 0.234 | — |
+| dims write-precision | 1.000 | 1.000 | 0.600 |
+| dims evolution | 0.400 | **1.000** | 0.800 |
+| bench ingest p50 | **0.045 ms** | 131 987 ms | 0.000 ms |
+| bench answer p50 | **0.159 ms** | 35.4 ms | 0.025 ms |
+
+Stated plainly: **we win abstention discipline and latency by a wide
+margin, we tie Supermemory on multi-hop recall, and we lose to it on
+LongMemEval.** We also lose badly to `full-history`, which on a small
+reader is a much stronger baseline than either memory layer — that result
+travels with the numbers and should temper any claim about either system.
+The blocking defect is **extraction recall on long sessions** (our
+one-shot extractor dropped a verbatim fact from a 12-turn session);
+`dims` evolution is the second.
+
+These CPU-only numbers are **not** comparable to Supermemory's published
+self-reports (cloud tier, proprietary extraction models, larger readers,
+different harness) — their configuration is a floor here, not their
+ceiling. Local deterministic numbers on the no-model path: `bench` ingest
+p50 ~0.045 ms, answer p50 ~0.16 ms. BEAM was not run: its 100K-token
+conversations do not fit a CPU-only time budget.
 
 ## ContextMemory vs the field
 

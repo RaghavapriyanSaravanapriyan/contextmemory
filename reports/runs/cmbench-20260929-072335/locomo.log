@@ -1,0 +1,14 @@
+  convo 0 contextmemory: 32/199=0.161 (ingest 1303s)
+Traceback (most recent call last):
+  File "/home/raghav/Desktop/contextmemory/benchmarks/run_official.py", line 532, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/home/raghav/Desktop/contextmemory/benchmarks/run_official.py", line 528, in main
+    return args.func(args)
+           ~~~~~~~~~^^^^^^
+  File "/home/raghav/Desktop/contextmemory/benchmarks/run_official.py", line 464, in cmd_locomo
+    sys_obj.ingest(s)
+    ~~~~~~~~~~~~~~^^^
+  File "/home/raghav/Desktop/contextmemory/benchmarks/adapters/supermemory_adapter.py", line 154, in ingest
+    raise SkipError(f"supermemory ingest failed for {doc_id}")
+benchmarks.adapters.supermemory_adapter.SkipError: supermemory ingest failed for yj3J9wzRGmjfY6fs9n79V9

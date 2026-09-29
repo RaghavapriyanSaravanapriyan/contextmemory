@@ -1,0 +1,4 @@
+system:        supermemory
+workload:      30 sessions, 4 probes
+ingest  p50 131987.061 ms  p95 340346.073 ms  mean 165503.754 ms  (n=30)
+answer  p50   35.439 ms  p95   42.978 ms  mean   37.038 ms  (n=4)

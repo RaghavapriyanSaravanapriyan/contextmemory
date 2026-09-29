@@ -141,7 +141,13 @@ def test_suite_cmd_shapes(cm, tmp_path) -> None:
     outdir = tmp_path
     assert "dims" in cm.suite_cmd(args, ROOT, outdir, "dims")
     bench = cm.suite_cmd(args, ROOT, outdir, "bench", "contextmemory")
-    assert bench[-1] == "contextmemory"
+    assert "contextmemory" in bench and "--sessions" in bench
+    assert bench[-1] == "200"  # default bench workload size
+    args_x = cm.parse_args(["--extract-model", "x7b"])
+    assert "--extract-model" in cm.suite_cmd(
+        args_x, ROOT, outdir, "dims", "contextmemory")
+    assert "--extract-model" in cm.suite_cmd(
+        args_x, ROOT, outdir, "longmemeval")
     lme = cm.suite_cmd(args, ROOT, outdir, "longmemeval")
     assert "--n" in lme and "--systems" in lme
     dims_cm = cm.suite_cmd(args, ROOT, outdir, "dims", "contextmemory")

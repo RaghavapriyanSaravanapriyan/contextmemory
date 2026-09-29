@@ -1,0 +1,31 @@
+system:        full-history
+dimensions:    13 probes
+evolution overall: 0.8000 (5 probes)
+  [ok  ] Where does the user currently work? 
+       hyp: The user currently works at Globex as a senior product manager.
+  [ok  ] What is the user's current job title? 
+       hyp: The user's current job title is senior product manager.
+  [ok  ] Where did the user work before joining Globex? 
+       hyp: The user worked as a software engineer at Acme Corp before joining Globex.
+  [ok  ] What was the user's job title at Acme? 
+       hyp: The user's job title at Acme was software engineer.
+  [FAIL] Where does the user work? 
+       hyp: The user currently works as a senior product manager at Globex.
+forgetting overall: 1.0000 (3 probes)
+  [ok  ] What is the user's name? 
+       hyp: Sarah.
+  [ok  ] What city does the user currently live in? 
+       hyp: The user currently lives in Chicago.
+  [ok  ] What city did the user previously live in? 
+       hyp: The user previously lived in Boston.
+write-precision overall: 0.6000 (5 probes)
+  [ok  ] What city did the user move to? 
+       hyp: The user moved to Austin.
+  [ok  ] What is the user's favorite hobby? 
+       hyp: The user's favorite hobby is trail running.
+  [FAIL] What is the user's pet's name? (abstain)
+       hyp: The transcript does not contain any information about the user's pet or its name.
+  [ok  ] What year did the user graduate college? (abstain)
+       hyp: Based on the provided transcript, there is no information given about when the user graduated from college. The only rel
+  [FAIL] What is the user's favorite food? (abstain)
+       hyp: The transcript does not contain any information about the user's favorite food.
