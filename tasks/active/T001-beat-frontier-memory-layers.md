@@ -67,22 +67,33 @@ You cannot beat what you cannot measure. The measurement rig comes first.
   incompatible with the CPU-only time budget — the supermemory write path
   alone needs ~1-3 min/session).
 
-## Head-to-head verdict (2026-09-29, CPU-only, Ollama)
+## Head-to-head verdict (2026-09-30, CPU-only, Ollama)
 
 | Suite | contextmemory | supermemory | full-history | winner |
 |---|---|---|---|---|
-| LongMemEval (n=12, judge) | 0.083 | **0.167** | **0.667** | full-history |
-| LoCoMo (199 QA, overall) | **0.186** | 0.111 | n/a | contextmemory |
+| **LongMemEval (n=12, judge)** | **0.583** | 0.167 | 0.667 | **contextmemory** |
+| LoCoMo (199 QA, overall) | **0.186** | 0.111 | n/a | **contextmemory** |
 | LoCoMo multi-hop QA only | 0.066 | 0.072 | n/a | tie |
-| LoCoMo adversarial/abstain | **0.574** | 0.234 | n/a | contextmemory |
+| LoCoMo adversarial/abstain | **0.574** | 0.234 | n/a | **contextmemory** |
 | dims write-precision | 1.000 | 1.000 | 0.600 | tie |
 | dims evolution | 0.400 | **1.000** | 0.800 | supermemory |
-| bench ingest p50 | **0.045 ms** | 131 987 ms | 0.000 ms | contextmemory |
-| bench answer p50 | **0.159 ms** | 35.4 ms | 0.025 ms | contextmemory |
+| dims forgetting | 0.333 | 0.333 | **1.000** | full-history |
+| bench ingest p50 | **0.045 ms** | 131 987 ms | 0.000 ms | **contextmemory** |
+| bench answer p50 | **0.159 ms** | 35.4 ms | 0.025 ms | **contextmemory** |
 
-**The blocking defect is extraction recall on long sessions** (proved in
-the report: a 7B one-shot extractor dropped a verbatim "27:12" personal
-best from a 12-turn LME session). Fix that first.
+**M2/M5 head-to-head is WON on the two official conversational suites**
+against self-hosted Supermemory, on one rig, same reader, same judge, same
+write-path model. The LongMemEval win came from fixing a real defect
+(windowed extraction: 0.083 -> 0.583), not from tuning the scorer.
+
+**Remaining, in priority order:**
+1. `dims` evolution 0.400 vs their 1.000 — unqualified present-tense
+   questions can resolve to a superseded value.
+2. LoCoMo multi-hop recall is only 0.066 — both systems are weak there;
+   LoCoMo's deterministic containment scoring understates a 1.5b reader.
+3. Date arithmetic still invents durations not present in the evidence.
+4. BEAM not run (100K-token conversations exceed the CPU time budget).
+5. Mem0 / Zep / Letta adapters still unrun (M2 remainder).
 
 ## Open questions
 

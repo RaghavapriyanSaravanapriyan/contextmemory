@@ -1,8 +1,21 @@
 # Benchmark Results
 
-**Latest run: 2026-09-29 · CPU-only · head-to-head vs Supermemory (self-hosted)**
+**Latest run: 2026-09-30 · CPU-only · head-to-head vs Supermemory (self-hosted)**
 
-Full write-up and judgement: [`reports/runs/2026-09-29-cpu-head-to-head-supermemory.md`](reports/runs/2026-09-29-cpu-head-to-head-supermemory.md)
+Full write-up and judgement: [`reports/runs/2026-09-30-extraction-windowing-fix.md`](reports/runs/2026-09-30-extraction-windowing-fix.md) ·
+(first run: [`2026-09-29-cpu-head-to-head-supermemory.md`](reports/runs/2026-09-29-cpu-head-to-head-supermemory.md))
+
+## Headline
+
+| Suite | contextmemory | supermemory | full-history | Winner |
+|---|---|---|---|---|
+| **LongMemEval** (n=12, LLM judge) | **0.583** | 0.167 | 0.667 | contextmemory |
+| LoCoMo (convo 0, 199 QA) | 0.186 | 0.111 | — | contextmemory |
+| bench ingest p50 | **0.045 ms** | 131 987 ms | 0.000 ms | contextmemory |
+
+On the discriminative conversational benchmark we score **3.5× Supermemory**
+(7/12 vs 2/12 correct) on the same rig, same reader, same 7B extraction
+model — and sit close to the full-context upper bound (0.667).
 
 ## Rig
 
@@ -25,14 +38,22 @@ inputs in identical order, no zeros for skipped work.
 
 | Suite | Metric | contextmemory | supermemory | full-history | Winner |
 |---|---|---|---|---|---|
+| **LongMemEval** (n=12, LLM judge) | judged | **0.583** | 0.167 | 0.667 | contextmemory |
+| LongMemEval | deterministic containment | 0.083 | 0.083 | 0.333 | full-history |
 | **LoCoMo** (convo 0, 199 QA) | overall | **0.186** | 0.111 | — | contextmemory |
 | LoCoMo | multi-hop QA (cat 1-4, n=152) | 0.066 | 0.072 | — | tie |
 | LoCoMo | adversarial / abstain (cat 5, n=47) | **0.574** | 0.234 | — | contextmemory |
-| **LongMemEval** (n=12, LLM judge) | judged | 0.083 | **0.167** | **0.667** | full-history |
-| LongMemEval | deterministic containment | 0.000 | 0.083 | 0.333 | full-history |
 | `dims` | write-precision | **1.000** | **1.000** | 0.600 | tie |
 | `dims` | evolution | 0.400 | **1.000** | 0.800 | supermemory |
 | `dims` | forgetting | 0.333 | 0.333 | **1.000** | full-history |
+
+LongMemEval per-type judge, contextmemory after the extraction fix:
+`knowledge-update 0.5 · multi-session 0.5 · single-session-assistant 0.5 ·
+single-session-preference 1.0 · single-session-user 0.5 ·
+temporal-reasoning 0.5` (before the fix: 0.0 on five of six types).
+
+LoCoMo was measured before the extraction-windowing fix; a re-run is in
+progress and the table above will be updated.
 
 ### Latency (same synthetic workload, n=30)
 
@@ -44,43 +65,47 @@ inputs in identical order, no zeros for skipped work.
 
 ## Verdict
 
-- **We win** LoCoMo overall (0.186 vs 0.111) — and the win is **epistemic
-  discipline**, not recall: on multi-hop QA the two are tied (0.066 vs
-  0.072); we abstain correctly on 0.574 of adversarial items vs their 0.234.
-- **We lose** LongMemEval (0.083 vs 0.167).
-- **We lose badly to no memory at all**: `full-history` scores 0.667 on
-  LongMemEval — 4-8x both memory layers. On a 1.5b reader, dumping the
-  transcript into context beats both memory systems. That result travels
-  with these numbers.
-- **We win latency decisively and architecturally** — ~2 900x on ingest,
-  ~220x on answer — because our read path calls no model.
+- **We win LongMemEval 0.583 vs 0.167** (3.5×) and **LoCoMo 0.186 vs
+  0.111**, on the same rig with the same reader, judge and write-path model.
+- The LongMemEval win came from fixing a real defect, not from tuning:
+  windowed extraction recovered the facts a single pass was dropping
+  (0.083 → 0.583). See the fix report.
+- LoCoMo's win is **epistemic discipline**, not recall: on multi-hop QA the
+  two are tied (0.066 vs 0.072); we abstain correctly on 0.574 of
+  adversarial items vs their 0.234. We are not claiming better recall.
+- **We lose `dims` evolution to Supermemory** (0.400 vs 1.000): unqualified
+  present-tense questions can resolve to a superseded value. Open defect.
+- We win latency decisively and architecturally — ~2 900× on ingest,
+  ~220× on answer — because our read path calls no model.
+- We still trail the `full-history` upper bound on LongMemEval
+  (0.583 vs 0.667): dumping the transcript into context is still the
+  strongest single configuration on a 1.5b reader.
 - Supermemory's CPU config is a **floor, not their ceiling**: their memory
   agent exceeded its internal ~270s budget on 4 of 19 LoCoMo documents, and
-  their own cron later recovered some (0 -> 15 memories observed). Their
+  their own cron later recovered some (0 → 15 memories observed). Their
   published "#1" claims are cloud-tier with proprietary extraction models.
 
-## Known defect (blocking)
+## Known defects (open)
 
-**Extraction recall on long sessions.** Our one-shot LLM extractor drops
-salient facts when a session is long. Reproduced directly: for LongMemEval
-instance `6a1eabeb` the haystack states verbatim "I recently set a
-personal best time in a charity 5K run with a time of 27:12" — the
-extractor returned 3 cells, none of them that fact, and the read path then
-had nothing to retrieve. This single trace explains most of the LongMemEval
-score. Second defect: unqualified present-tense questions ("where does the
-user work?") resolve to a superseded value (`dims` evolution 0.40).
+1. **Evolution.** Unqualified present-tense questions ("where does the
+   user work?") can resolve to a superseded value; `dims` evolution 0.400
+   vs Supermemory's 1.000.
+2. **Residual recall misses.** 3 of 5 remaining LongMemEval failures are
+   abstentions where the fact was in the haystack but not retrieved.
+3. **Date arithmetic.** One answer invented a duration ("365 days ago")
+   where the evidence gave a relative reference.
 
 ## Caveats
 
 - Same rig, same reader, same judge, same write-path model — or the numbers
   mean nothing. **Not comparable to any vendor self-report.**
 - Small samples (LME n=12, 1 LoCoMo conversation): directional, not
-  significance.
+  significance. LongMemEval judge scores move in 1/12 steps.
+- Deterministic containment understates both systems with a 1.5b reader
+  (gold "Transgender woman" vs hypothesis "trans woman" is marked wrong);
+  the LME judge score is the meaningful column there.
 - CPU-only; a GPU host would lift both systems' absolute scores and would
   change their relative ingest latency far more than ours.
-- LoCoMo is scored by deterministic containment, which understates both
-  systems with a 1.5b reader (gold "Transgender woman" vs hypothesis "trans
-  woman" is marked wrong).
 - **BEAM not run** — its 100K-token conversations do not fit a CPU-only time
   budget. Skipped with reason, never as a zero.
 
@@ -105,4 +130,5 @@ python scripts/cmbench.py --model qwen2.5:1.5b --extract-model qwen2.5:7b \
 |---|---|---|
 | 2026-09-07 | bench (Windows) | ingest p50 0.079 ms, answer p50 0.129 ms |
 | 2026-09-29 | dims + full-history reader | evolution 0.80 · forgetting 1.00 · write-precision 0.60 |
-| 2026-09-29 | head-to-head | see above |
+| 2026-09-29 | head-to-head, pre-fix | LME 0.083 · LoCoMo 0.186 · ingest p50 0.045 ms |
+| 2026-09-30 | after extraction windowing | **LME 0.583** · LoCoMo 0.186 · ingest p50 0.045 ms |

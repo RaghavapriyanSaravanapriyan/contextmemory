@@ -284,16 +284,17 @@ Frontier instruments: **LoCoMo** (near-saturated regression test),
 public benchmark covers (write precision, evolution, forgetting,
 deterministic latency). See `docs/research/frontier-memory-benchmarks.md`.
 
-### Head-to-head vs Supermemory, self-hosted, CPU-only (2026-09-29)
+### Head-to-head vs Supermemory, self-hosted, CPU-only
 
-Full run + judgement: `reports/runs/2026-09-29-cpu-head-to-head-supermemory.md`.
+Full runs: [`reports/runs/2026-09-30-extraction-windowing-fix.md`](reports/runs/2026-09-30-extraction-windowing-fix.md)
+· [`reports/runs/2026-09-29-cpu-head-to-head-supermemory.md`](reports/runs/2026-09-29-cpu-head-to-head-supermemory.md).
 One rig (Ryzen 7 5700G, no GPU), reader + judge `qwen2.5:1.5b`, **the same
 extraction model (`qwen2.5:7b`) driving both write paths**, Supermemory run
 from its own `supermemory-server` release behind the official SDK.
 
 | Suite | contextmemory | supermemory | full-history |
 |---|---|---|---|
-| LongMemEval (n=12, LLM judge) | 0.083 | **0.167** | **0.667** |
+| **LongMemEval** (n=12, LLM judge) | **0.583** | 0.167 | 0.667 |
 | LoCoMo (convo 0, 199 QA) | **0.186** | 0.111 | — |
 | …of which multi-hop QA | 0.066 | 0.072 | — |
 | …of which adversarial/abstain | **0.574** | 0.234 | — |
@@ -302,21 +303,23 @@ from its own `supermemory-server` release behind the official SDK.
 | bench ingest p50 | **0.045 ms** | 131 987 ms | 0.000 ms |
 | bench answer p50 | **0.159 ms** | 35.4 ms | 0.025 ms |
 
-Stated plainly: **we win abstention discipline and latency by a wide
-margin, we tie Supermemory on multi-hop recall, and we lose to it on
-LongMemEval.** We also lose badly to `full-history`, which on a small
-reader is a much stronger baseline than either memory layer — that result
-travels with the numbers and should temper any claim about either system.
-The blocking defect is **extraction recall on long sessions** (our
-one-shot extractor dropped a verbatim fact from a 12-turn session);
-`dims` evolution is the second.
+Stated plainly: **we beat Supermemory 3.5× on LongMemEval (7/12 vs 2/12) and
+win LoCoMo overall**, while still trailing the full-context upper bound
+(0.667) on LongMemEval. LoCoMo's win is abstention discipline, not recall —
+multi-hop accuracy is a tie (0.066 vs 0.072), and we say so rather than
+claim otherwise. `dims` evolution is a genuine loss to Supermemory. We win
+latency by ~2 900× on ingest because our read path calls no model.
+
+The LongMemEval win came from fixing a real defect, not from tuning: a
+single extraction pass over a long session was dropping salient facts
+(verbatim "personal best 27:12" lost from a 12-turn session). Deterministic
+windowing took that suite from 0.083 to 0.583.
 
 These CPU-only numbers are **not** comparable to Supermemory's published
 self-reports (cloud tier, proprietary extraction models, larger readers,
 different harness) — their configuration is a floor here, not their
-ceiling. Local deterministic numbers on the no-model path: `bench` ingest
-p50 ~0.045 ms, answer p50 ~0.16 ms. BEAM was not run: its 100K-token
-conversations do not fit a CPU-only time budget.
+ceiling. BEAM was not run: its 100K-token conversations do not fit a
+CPU-only time budget.
 
 ## ContextMemory vs the field
 
