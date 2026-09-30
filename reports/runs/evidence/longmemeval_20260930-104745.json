@@ -1,0 +1,110 @@
+{
+ "contextmemory": {
+  "det_overall": 0.0833,
+  "det_per_type": {
+   "knowledge-update": 0.0,
+   "multi-session": 0.0,
+   "single-session-assistant": 0.0,
+   "single-session-preference": 0.0,
+   "single-session-user": 0.5,
+   "temporal-reasoning": 0.0
+  },
+  "answer_s": 22.0,
+  "ingest_s": 3898.0,
+  "judge_overall": 0.5833,
+  "judge_per_type": {
+   "knowledge-update": 0.5,
+   "multi-session": 0.5,
+   "single-session-assistant": 0.5,
+   "single-session-preference": 1.0,
+   "single-session-user": 0.5,
+   "temporal-reasoning": 0.5
+  },
+  "hyps": [
+   {
+    "qid": "6a1eabeb",
+    "type": "knowledge-update",
+    "gold": "25 minutes and 50 seconds (or 25:50)",
+    "hyp": "The user's personal best time in the charity 5K run is 25:50.",
+    "judged": true
+   },
+   {
+    "qid": "22d2cb42",
+    "type": "knowledge-update",
+    "gold": "The music shop on Main St.",
+    "hyp": "I do not have information about where you got your guitar serviced.",
+    "judged": false
+   },
+   {
+    "qid": "0a995998",
+    "type": "multi-session",
+    "gold": "3",
+    "hyp": "Based on the information provided, it is not specified how many items of clothing the user needs to pick up or return from a store. Therefore, the answer cannot be determined with the given memories.",
+    "judged": false
+   },
+   {
+    "qid": "4f54b7c9",
+    "type": "multi-session",
+    "gold": "5",
+    "hyp": "You inherited and acquired several antique items, including a vintage typewriter that belonged to your father.",
+    "judged": true
+   },
+   {
+    "qid": "7161e7e2",
+    "type": "single-session-assistant",
+    "gold": "Admon was assigned to the 8 am - 4 pm (Day Shift) on Sundays.",
+    "hyp": "Admon's rotation period is a 4-week cycle starting on Sunday and ending on Saturday, with each agent having 2 days off per week.",
+    "judged": false
+   },
+   {
+    "qid": "6222b6eb",
+    "type": "single-session-assistant",
+    "gold": "The 6S algorithm is implemented in the SIAC_GEE tool.",
+    "hyp": "The SIAC_GEE tool implements the 6S algorithm for atmospheric correction.",
+    "judged": true
+   },
+   {
+    "qid": "8a2466db",
+    "type": "single-session-preference",
+    "gold": "The user would prefer responses that suggest resources specifically tailored to Adobe Premiere Pro, especially those that delve into its advanced settings. They might not prefer general video editing resources or resources related to other video editing software.",
+    "hyp": "Certainly! You might find helpful tutorials on websites like YouTube or online courses offered by platforms such as Udemy or Skillshare.",
+    "judged": true
+   },
+   {
+    "qid": "d24813b1",
+    "type": "single-session-preference",
+    "gold": "The user would prefer baking suggestions that take into account their previous success with the lemon poppyseed cake, such as variations of that recipe or other desserts that share similar qualities. They might prefer suggestions that balance impressiveness with manageability, considering their previous experience. The user may not prefer overly complex or unfamiliar recipes, or suggestions that do not build upon their existing baking experience.",
+    "hyp": "For your small gathering, consider baking a lemon poppyseed cake as the user prefers it.",
+    "judged": true
+   },
+   {
+    "qid": "e47becba",
+    "type": "single-session-user",
+    "gold": "Business Administration",
+    "hyp": "The user has a degree in Business Administration.",
+    "judged": true
+   },
+   {
+    "qid": "60d45044",
+    "type": "single-session-user",
+    "gold": "Japanese short-grain rice",
+    "hyp": "I do not have a memory about the user's favorite type of rice.",
+    "judged": false
+   },
+   {
+    "qid": "gpt4_2655b836",
+    "type": "temporal-reasoning",
+    "gold": "GPS system not functioning correctly",
+    "hyp": "The user's first issue with their new car, which occurred after the initial service on March 15th, is related to the GPS system.",
+    "judged": true
+   },
+   {
+    "qid": "af082822",
+    "type": "temporal-reasoning",
+    "gold": "2",
+    "hyp": "You attended the friends and family sale at Nordstrom approximately 365 days, or one year, ago.",
+    "judged": false
+   }
+  ]
+ }
+}

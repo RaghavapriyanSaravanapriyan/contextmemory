@@ -1,0 +1,110 @@
+{
+ "supermemory": {
+  "det_overall": 0.0833,
+  "det_per_type": {
+   "knowledge-update": 0.0,
+   "multi-session": 0.0,
+   "single-session-assistant": 0.5,
+   "single-session-preference": 0.0,
+   "single-session-user": 0.0,
+   "temporal-reasoning": 0.0
+  },
+  "answer_s": 14.8,
+  "ingest_s": 4446.4,
+  "judge_overall": 0.1667,
+  "judge_per_type": {
+   "knowledge-update": 0.0,
+   "multi-session": 0.5,
+   "single-session-assistant": 0.5,
+   "single-session-preference": 0.0,
+   "single-session-user": 0.0,
+   "temporal-reasoning": 0.0
+  },
+  "hyps": [
+   {
+    "qid": "6a1eabeb",
+    "type": "knowledge-update",
+    "gold": "25 minutes and 50 seconds (or 25:50)",
+    "hyp": "I don't have enough information in memory to answer this question. The memories I have do not cover: What was my personal best time in the charity 5K run?",
+    "judged": false
+   },
+   {
+    "qid": "22d2cb42",
+    "type": "knowledge-update",
+    "gold": "The music shop on Main St.",
+    "hyp": "I don't have enough information in memory to answer this question. The memories I have do not cover: Where did I get my guitar serviced?",
+    "judged": false
+   },
+   {
+    "qid": "0a995998",
+    "type": "multi-session",
+    "gold": "3",
+    "hyp": "The user is planning to organize their closet this weekend and seeks tips on managing pickups and returns. It's recommended to create a 'To-Pickup' list, set reminders, designate a 'Returns' spot, keep receipts organized, use a task management app, and take photos for backup.",
+    "judged": false
+   },
+   {
+    "qid": "4f54b7c9",
+    "type": "multi-session",
+    "gold": "5",
+    "hyp": "I don't have enough information in memory to answer this question. The memories I have do not cover: How many antique items did I inherit or acquire from my family members?",
+    "judged": true
+   },
+   {
+    "qid": "7161e7e2",
+    "type": "single-session-assistant",
+    "gold": "Admon was assigned to the 8 am - 4 pm (Day Shift) on Sundays.",
+    "hyp": "Admon's rotation on Sunday is Sara.",
+    "judged": false
+   },
+   {
+    "qid": "6222b6eb",
+    "type": "single-session-assistant",
+    "gold": "The 6S algorithm is implemented in the SIAC_GEE tool.",
+    "hyp": "The algorithm implemented in the SIAC_GEE tool is 6S.",
+    "judged": true
+   },
+   {
+    "qid": "8a2466db",
+    "type": "single-session-preference",
+    "gold": "The user would prefer responses that suggest resources specifically tailored to Adobe Premiere Pro, especially those that delve into its advanced settings. They might not prefer general video editing resources or resources related to other video editing software.",
+    "hyp": "I don't have enough information in memory to answer this question. The memories I have do not cover: Can you recommend some resources where I can learn more about video editing?",
+    "judged": false
+   },
+   {
+    "qid": "d24813b1",
+    "type": "single-session-preference",
+    "gold": "The user would prefer baking suggestions that take into account their previous success with the lemon poppyseed cake, such as variations of that recipe or other desserts that share similar qualities. They might prefer suggestions that balance impressiveness with manageability, considering their previous experience. The user may not prefer overly complex or unfamiliar recipes, or suggestions that do not build upon their existing baking experience.",
+    "hyp": "I don't have enough information in memory to answer this question. The memories I have do not cover: I'm thinking of inviting my colleagues over for a small gathering. Any tips on what to bake?",
+    "judged": false
+   },
+   {
+    "qid": "e47becba",
+    "type": "single-session-user",
+    "gold": "Business Administration",
+    "hyp": "I don't have enough information in memory to answer this question. The memories I have do not cover: What degree did I graduate with?",
+    "judged": false
+   },
+   {
+    "qid": "60d45044",
+    "type": "single-session-user",
+    "gold": "Japanese short-grain rice",
+    "hyp": "I don't have enough information in memory to answer this question. The memories I have do not cover: What type of rice is my favorite?",
+    "judged": false
+   },
+   {
+    "qid": "gpt4_2655b836",
+    "type": "temporal-reasoning",
+    "gold": "GPS system not functioning correctly",
+    "hyp": "The first issue I had with my new car after its first service was a minor electrical problem that required a replacement of the starter motor.",
+    "judged": false
+   },
+   {
+    "qid": "af082822",
+    "type": "temporal-reasoning",
+    "gold": "2",
+    "hyp": "The user attended the friends and family sale at Nordstrom 3 weeks ago.",
+    "judged": false
+   }
+  ]
+ }
+}

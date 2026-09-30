@@ -1,0 +1,110 @@
+{
+ "full-history": {
+  "det_overall": 0.3333,
+  "det_per_type": {
+   "knowledge-update": 0.5,
+   "multi-session": 0.0,
+   "single-session-assistant": 0.5,
+   "single-session-preference": 0.0,
+   "single-session-user": 1.0,
+   "temporal-reasoning": 0.0
+  },
+  "answer_s": 737.6,
+  "ingest_s": 0.0,
+  "judge_overall": 0.6667,
+  "judge_per_type": {
+   "knowledge-update": 0.5,
+   "multi-session": 0.0,
+   "single-session-assistant": 1.0,
+   "single-session-preference": 1.0,
+   "single-session-user": 1.0,
+   "temporal-reasoning": 0.5
+  },
+  "hyps": [
+   {
+    "qid": "6a1eabeb",
+    "type": "knowledge-update",
+    "gold": "25 minutes and 50 seconds (or 25:50)",
+    "hyp": "Your personal best time in the charity 5K run was 27:12.",
+    "judged": false
+   },
+   {
+    "qid": "22d2cb42",
+    "type": "knowledge-update",
+    "gold": "The music shop on Main St.",
+    "hyp": "You got your guitar serviced at a music shop on Main St.",
+    "judged": true
+   },
+   {
+    "qid": "0a995998",
+    "type": "multi-session",
+    "gold": "3",
+    "hyp": "It",
+    "judged": false
+   },
+   {
+    "qid": "4f54b7c9",
+    "type": "multi-session",
+    "gold": "5",
+    "hyp": "You inherited or acquired two antique items from your family members:\n\n1. An antique tea set that came from your cousin Rachel.\n2. A vintage typewriter that belonged to your dad.\n\nSo, you have a total of 2 antique items.",
+    "judged": false
+   },
+   {
+    "qid": "7161e7e2",
+    "type": "single-session-assistant",
+    "gold": "Admon was assigned to the 8 am - 4 pm (Day Shift) on Sundays.",
+    "hyp": "Admon's shift on Sunday is listed as working in the Day Shift (8 am - 4 pm).",
+    "judged": true
+   },
+   {
+    "qid": "6222b6eb",
+    "type": "single-session-assistant",
+    "gold": "The 6S algorithm is implemented in the SIAC_GEE tool.",
+    "hyp": "Yes, according to my earlier response, 6S (Second Simulation of a Satellite Signal in the Solar Spectrum) algorithm is implemented in the SIAC_GEE (Sentinel-2 Image Atmospheric Correction in Google Earth Engine) tool.",
+    "judged": true
+   },
+   {
+    "qid": "8a2466db",
+    "type": "single-session-preference",
+    "gold": "The user would prefer responses that suggest resources specifically tailored to Adobe Premiere Pro, especially those that delve into its advanced settings. They might not prefer general video editing resources or resources related to other video editing software.",
+    "hyp": "Certainly! Here are a few resources that might help you further your learning in video editing:\n\n1. **Adobe Premiere Pro Documentation**: The official documentation is an excellent starting point for understanding the features and functionalities of Adobe Premiere Pro.\n2. **YouTube Channels**:\n   - **Premiere Bro**: Offers tutorials on various aspects of video editing, including color grading, audio mixing, and more.\n   - **Video Copilot**: Provides comprehensive guides and tips on advanced video techniques, including multi-camera editing and motion graphics.\n3. **Online Courses**:\n   - **Udem",
+    "judged": true
+   },
+   {
+    "qid": "d24813b1",
+    "type": "single-session-preference",
+    "gold": "The user would prefer baking suggestions that take into account their previous success with the lemon poppyseed cake, such as variations of that recipe or other desserts that share similar qualities. They might prefer suggestions that balance impressiveness with manageability, considering their previous experience. The user may not prefer overly complex or unfamiliar recipes, or suggestions that do not build upon their existing baking experience.",
+    "hyp": "Certainly! For a small gathering, you could consider baking a batch of **mini chocolate chip cookies** or a **lemon poppyseed cake**. Both are simple recipes that can be easily shared and enjoyed by your colleagues.\n\nFor the mini chocolate chip cookies:\n- You'll need 2 cups of all-purpose flour, 1/4 cup of granulated sugar, 1/4 cup of brown sugar, 2 large eggs, 1 teaspoon baking soda, 1/2 teaspoon salt, and 3/4 cup semi-sweet chocolate chips.\n- Preheat your oven to 350\u00b0F (175\u00b0C) and line a baking sheet with parchment paper. Mix the dry ingredients together in a bowl, then beat the butter and s",
+    "judged": true
+   },
+   {
+    "qid": "e47becba",
+    "type": "single-session-user",
+    "gold": "Business Administration",
+    "hyp": "You graduated with a degree in Business Administration.",
+    "judged": true
+   },
+   {
+    "qid": "60d45044",
+    "type": "single-session-user",
+    "gold": "Japanese short-grain rice",
+    "hyp": "Based on the conversation, it seems that your favorite type of rice is Japanese short-grain rice. This was mentioned when you were considering making some Japanese-style dishes with your favorite Japanese short-grain rice.",
+    "judged": true
+   },
+   {
+    "qid": "gpt4_2655b836",
+    "type": "temporal-reasoning",
+    "gold": "GPS system not functioning correctly",
+    "hyp": "The",
+    "judged": true
+   },
+   {
+    "qid": "af082822",
+    "type": "temporal-reasoning",
+    "gold": "2",
+    "hyp": "You attended the friends and family sale at Nordstrom approximately 3 weeks ago, as indicated by your statement \"I've been doing some shopping lately and scored some great deals, by the way.\"",
+    "judged": false
+   }
+  ]
+ }
+}

@@ -1,0 +1,15 @@
+{
+ "det_overall": null,
+ "judge_overall": 0.0833,
+ "judge_per_type": {
+  "knowledge-update": 0.5,
+  "multi-session": 0.0,
+  "single-session-assistant": 0.0,
+  "single-session-preference": 0.0,
+  "single-session-user": 0.0,
+  "temporal-reasoning": 0.0
+ },
+ "n": 12,
+ "ingest_s": 2241.2,
+ "answer_s": 12.7
+}
