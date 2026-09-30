@@ -295,9 +295,9 @@ from its own `supermemory-server` release behind the official SDK.
 | Suite | contextmemory | supermemory | full-history |
 |---|---|---|---|
 | **LongMemEval** (n=12, LLM judge) | **0.583** | 0.167 | 0.667 |
-| LoCoMo (convo 0, 199 QA) | **0.186** | 0.111 | — |
+| LoCoMo (convo 0, 199 QA) | **0.136** | 0.111 | — |
 | …of which multi-hop QA | 0.066 | 0.072 | — |
-| …of which adversarial/abstain | **0.574** | 0.234 | — |
+| …of which adversarial/abstain | **0.362** | 0.234 | — |
 | dims write-precision | 1.000 | 1.000 | 0.600 |
 | dims evolution | 0.400 | **1.000** | 0.800 |
 | bench ingest p50 | **0.045 ms** | 131 987 ms | 0.000 ms |
@@ -314,6 +314,13 @@ The LongMemEval win came from fixing a real defect, not from tuning: a
 single extraction pass over a long session was dropping salient facts
 (verbatim "personal best 27:12" lost from a 12-turn session). Deterministic
 windowing took that suite from 0.083 to 0.583.
+
+That fix was not free: LoCoMo fell 0.186 → 0.136 because storing more cells
+makes the reader commit to answers more often, costing adversarial
+abstention (0.574 → 0.362) while multi-hop recall stayed at 0.066. We kept
+it deliberately (+7× on the discriminative suite, −0.050 on a suite we were
+already winning) and the trade-off is documented in the run report rather
+than buried.
 
 These CPU-only numbers are **not** comparable to Supermemory's published
 self-reports (cloud tier, proprietary extraction models, larger readers,

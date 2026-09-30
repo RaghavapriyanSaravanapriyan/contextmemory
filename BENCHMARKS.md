@@ -10,7 +10,7 @@ Full write-up and judgement: [`reports/runs/2026-09-30-extraction-windowing-fix.
 | Suite | contextmemory | supermemory | full-history | Winner |
 |---|---|---|---|---|
 | **LongMemEval** (n=12, LLM judge) | **0.583** | 0.167 | 0.667 | contextmemory |
-| LoCoMo (convo 0, 199 QA) | 0.186 | 0.111 | — | contextmemory |
+| LoCoMo (convo 0, 199 QA) | 0.136 | 0.111 | — | contextmemory |
 | bench ingest p50 | **0.045 ms** | 131 987 ms | 0.000 ms | contextmemory |
 
 On the discriminative conversational benchmark we score **3.5× Supermemory**
@@ -40,9 +40,9 @@ inputs in identical order, no zeros for skipped work.
 |---|---|---|---|---|---|
 | **LongMemEval** (n=12, LLM judge) | judged | **0.583** | 0.167 | 0.667 | contextmemory |
 | LongMemEval | deterministic containment | 0.083 | 0.083 | 0.333 | full-history |
-| **LoCoMo** (convo 0, 199 QA) | overall | **0.186** | 0.111 | — | contextmemory |
+| **LoCoMo** (convo 0, 199 QA) | overall | **0.136** | 0.111 | — | contextmemory |
 | LoCoMo | multi-hop QA (cat 1-4, n=152) | 0.066 | 0.072 | — | tie |
-| LoCoMo | adversarial / abstain (cat 5, n=47) | **0.574** | 0.234 | — | contextmemory |
+| LoCoMo | adversarial / abstain (cat 5, n=47) | **0.362** | 0.234 | — | contextmemory |
 | `dims` | write-precision | **1.000** | **1.000** | 0.600 | tie |
 | `dims` | evolution | 0.400 | **1.000** | 0.800 | supermemory |
 | `dims` | forgetting | 0.333 | 0.333 | **1.000** | full-history |
@@ -52,8 +52,11 @@ LongMemEval per-type judge, contextmemory after the extraction fix:
 single-session-preference 1.0 · single-session-user 0.5 ·
 temporal-reasoning 0.5` (before the fix: 0.0 on five of six types).
 
-LoCoMo was measured before the extraction-windowing fix; a re-run is in
-progress and the table above will be updated.
+LoCoMo re-measured **with** the fix: 0.136 (was 0.186 pre-fix) — the fix
+stores more cells, so the reader commits to answers more often, which costs
+adversarial abstention (0.574 → 0.362) while leaving multi-hop recall
+unchanged. We still beat Supermemory (0.136 vs 0.111). The deliberate trade:
++7× on LongMemEval against -0.050 on a suite where we were already ahead.
 
 ### Latency (same synthetic workload, n=30)
 
@@ -65,13 +68,13 @@ progress and the table above will be updated.
 
 ## Verdict
 
-- **We win LongMemEval 0.583 vs 0.167** (3.5×) and **LoCoMo 0.186 vs
+- **We win LongMemEval 0.583 vs 0.167** (3.5×) and **LoCoMo 0.136 vs
   0.111**, on the same rig with the same reader, judge and write-path model.
 - The LongMemEval win came from fixing a real defect, not from tuning:
   windowed extraction recovered the facts a single pass was dropping
   (0.083 → 0.583). See the fix report.
 - LoCoMo's win is **epistemic discipline**, not recall: on multi-hop QA the
-  two are tied (0.066 vs 0.072); we abstain correctly on 0.574 of
+  two are tied (0.066 vs 0.072); we abstain correctly on 0.362 of
   adversarial items vs their 0.234. We are not claiming better recall.
 - **We lose `dims` evolution to Supermemory** (0.400 vs 1.000): unqualified
   present-tense questions can resolve to a superseded value. Open defect.
@@ -131,4 +134,4 @@ python scripts/cmbench.py --model qwen2.5:1.5b --extract-model qwen2.5:7b \
 | 2026-09-07 | bench (Windows) | ingest p50 0.079 ms, answer p50 0.129 ms |
 | 2026-09-29 | dims + full-history reader | evolution 0.80 · forgetting 1.00 · write-precision 0.60 |
 | 2026-09-29 | head-to-head, pre-fix | LME 0.083 · LoCoMo 0.186 · ingest p50 0.045 ms |
-| 2026-09-30 | after extraction windowing | **LME 0.583** · LoCoMo 0.186 · ingest p50 0.045 ms |
+| 2026-09-30 | after extraction windowing | **LME 0.583** · LoCoMo 0.136 · ingest p50 0.045 ms |

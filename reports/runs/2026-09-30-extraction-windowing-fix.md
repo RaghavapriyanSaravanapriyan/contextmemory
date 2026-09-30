@@ -81,6 +81,39 @@ costs extra bounded calls). Suite wall-clock: LongMemEval ingest
 2241s → 3898s. The deterministic read path is untouched: `bench` stays at
 0.045 ms ingest / 0.159 ms answer p50.
 
+## The same fix *lowered* LoCoMo — reported, not buried
+
+Re-running LoCoMo (convo 0, 199 QA) with the shipped code:
+
+| LoCoMo | overall | multi-hop (cat 1-4, n=152) | adversarial (cat 5, n=47) |
+|---|---|---|---|
+| before windowing | **0.186** | 0.066 | **0.574** |
+| after windowing | 0.136 | 0.066 | 0.362 |
+| supermemory | 0.111 | 0.072 | 0.234 |
+
+The fix **cost us 0.050 on LoCoMo** and the cause is mechanical: windowing
+stores *more* cells per session, so the read path returns more evidence,
+so the 1.5b reader is more willing to commit to an answer. On adversarial
+questions — where the correct behaviour is to decline — that converts
+abstentions into confabulations (0.574 → 0.362). Multi-hop recall is
+unchanged at 0.066, i.e. windowing did not help LoCoMo's multi-hop
+bottleneck at all (that one looks reader-bound, not extraction-bound: the
+LME needle was extraction-bound, LoCoMo's multi-hop is not).
+
+**Net:** we still beat Supermemory on both official suites with the
+shipped code (LongMemEval 0.583 vs 0.167; LoCoMo 0.136 vs 0.111), but the
+LoCoMo margin is thinner than the pre-fix run suggested. The trade is
+deliberate: 7× on the discriminative benchmark against a 0.050 regression
+on a suite where we were already ahead.
+
+**Next engineering step, now precisely specified:** more evidence should
+raise recall without raising confabulation. The abstention decision should
+be conditioned on whether the *evidence supports the specific claim*, not
+on how much evidence there is. Concretely: distinguish "retrieved but
+irrelevant" from "retrieved and relevant" at pack time (the packer
+already knows per-item scores) and let the answer path abstain when
+relevance is low regardless of evidence volume.
+
 ## Open defects (unchanged by this fix)
 
 1. **Evolution** — unqualified present-tense questions can resolve to a

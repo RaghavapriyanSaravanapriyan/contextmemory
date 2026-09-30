@@ -1,0 +1,62 @@
+{
+ "note": "LoCoMo official convo 0, 199 QA, post-extraction-windowing (shipped code). Commit-friendly copy; benchmarks/results/ is gitignored.",
+ "runs": {
+  "2026-09-29 (pre-fix)": {
+   "contextmemory": {
+    "overall": [
+     37,
+     199,
+     0.1859
+    ],
+    "multi_hop_qa_cat1_4": [
+     10,
+     152,
+     0.0658
+    ],
+    "adversarial_cat5": [
+     27,
+     47,
+     0.5745
+    ]
+   }
+  },
+  "2026-09-30 (post-fix)": {
+   "contextmemory": {
+    "overall": [
+     27,
+     199,
+     0.1357
+    ],
+    "multi_hop_qa_cat1_4": [
+     10,
+     152,
+     0.0658
+    ],
+    "adversarial_cat5": [
+     17,
+     47,
+     0.3617
+    ]
+   }
+  },
+  "2026-09-29 (supermemory)": {
+   "supermemory": {
+    "overall": [
+     22,
+     199,
+     0.1106
+    ],
+    "multi_hop_qa_cat1_4": [
+     11,
+     152,
+     0.0724
+    ],
+    "adversarial_cat5": [
+     11,
+     47,
+     0.234
+    ]
+   }
+  }
+ }
+}

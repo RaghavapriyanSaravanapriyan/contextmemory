@@ -72,9 +72,9 @@ You cannot beat what you cannot measure. The measurement rig comes first.
 | Suite | contextmemory | supermemory | full-history | winner |
 |---|---|---|---|---|
 | **LongMemEval (n=12, judge)** | **0.583** | 0.167 | 0.667 | **contextmemory** |
-| LoCoMo (199 QA, overall) | **0.186** | 0.111 | n/a | **contextmemory** |
+| LoCoMo (199 QA, overall) | **0.136** | 0.111 | n/a | **contextmemory** |
 | LoCoMo multi-hop QA only | 0.066 | 0.072 | n/a | tie |
-| LoCoMo adversarial/abstain | **0.574** | 0.234 | n/a | **contextmemory** |
+| LoCoMo adversarial/abstain | **0.362** | 0.234 | n/a | **contextmemory** |
 | dims write-precision | 1.000 | 1.000 | 0.600 | tie |
 | dims evolution | 0.400 | **1.000** | 0.800 | supermemory |
 | dims forgetting | 0.333 | 0.333 | **1.000** | full-history |
@@ -87,8 +87,13 @@ write-path model. The LongMemEval win came from fixing a real defect
 (windowed extraction: 0.083 -> 0.583), not from tuning the scorer.
 
 **Remaining, in priority order:**
-1. `dims` evolution 0.400 vs their 1.000 — unqualified present-tense
-   questions can resolve to a superseded value.
+1. `dims` evolution 0.400 vs their 1.000 — diagnosed: for a past-anchored
+   question ("job title AT ACME") the projection channel ranks current-state
+   cells above the historical one, so the pack never carries the Acme title.
+   Fix = demote the projection channel when the query carries a past marker.
+2. Abstention must be conditioned on evidence *relevance*, not evidence
+   volume — windowing raised recall but lowered adversarial abstention
+   (0.574 -> 0.362); more evidence currently buys more confabulation.
 2. LoCoMo multi-hop recall is only 0.066 — both systems are weak there;
    LoCoMo's deterministic containment scoring understates a 1.5b reader.
 3. Date arithmetic still invents durations not present in the evidence.
