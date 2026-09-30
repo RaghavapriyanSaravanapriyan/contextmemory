@@ -79,7 +79,10 @@ like "last month" against today {today}); empty if unknown
 - "evidence_span": the exact quoted source phrase supporting the fact
 
 Rules:
-- Prefer 1-5 coarse facts over many fine-grained ones.
+- Prefer 3-8 coarse facts over many fine-grained ones.
+- Capture EVERY explicit number, date, duration, price, and named entity
+  the user states - scores, times, counts and deadlines are the facts most
+  often lost, and they are usually the ones asked about later.
 - Skip small talk, chit-chat, and procedural noise.
 - If the conversation has no durable facts, return {{"cells": []}}.
 - NEVER invent a fact. If unsure, omit it.
@@ -97,6 +100,15 @@ Example response shape (do not copy these facts):
 """
 
 _EXTRACTION_MAX_TOKENS = 1536
+
+# Long sessions must be extracted in windows. A single pass over a long
+# transcript loses facts: the model attends to the head and tail and drops
+# what sits in the middle (measured: a 12-turn LongMemEval session whose
+# verbatim "personal best 27:12" never became a cell, while three
+# lower-value facts from the same session did). Windowing is one extra
+# bounded call per window, keeps each prompt inside the extraction context,
+# and is deterministic - the same session always yields the same windows.
+_WINDOW_CHARS = 8000
 
 
 class Extractor(Protocol):
@@ -202,31 +214,84 @@ def _clamp_float(value, default: float) -> float:
         return default
 
 
-class LLMExtractor:
-    """Single-pass structured LLM extraction (model-agnostic).
+def _normalize(text: str) -> str:
+    return re.sub(r"[^a-z0-9 ]+", " ", text.lower()).split().__repr__()
 
-    One completion per session, temperature 0, strict JSON guidance. The
+
+class LLMExtractor:
+    """Single-pass-per-window structured LLM extraction (model-agnostic).
+
+    One completion per window, temperature 0, strict JSON guidance. The
     returned cells are reconciled and stored by the memory engine.
+
+    A session longer than ``window_chars`` is split on turn boundaries into
+    several windows, each extracted independently and merged. The split is
+    deterministic and lossless (every turn appears in exactly one window),
+    which is what fixes recall on long sessions.
     """
 
-    def __init__(self, client: ReaderClient) -> None:
+    def __init__(
+        self, client: ReaderClient, *, window_chars: int = _WINDOW_CHARS
+    ) -> None:
         self._client = client
+        self._window_chars = max(1000, window_chars)
 
     def extract(self, session: Session) -> list[CellInput]:
         default_ts = to_ms(session.timestamp)
-        transcript = "\n".join(
-            f"{turn.role}: {turn.content}" for turn in session.turns
-        )
-        prompt = _PROMPT.format(
-            transcript=transcript, today=session.timestamp.date().isoformat()
-        )
-        payload = self._client.complete(
-            [{"role": "user", "content": prompt}],
-            temperature=0.0,
-            max_tokens=_EXTRACTION_MAX_TOKENS,
-            json_mode=True,
-        )
-        return parse_cells(payload, default_ts, session.timestamp)
+        cells: list[CellInput] = []
+        for transcript in self._windows(session):
+            prompt = _PROMPT.format(
+                transcript=transcript,
+                today=session.timestamp.date().isoformat(),
+            )
+            payload = self._client.complete(
+                [{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=_EXTRACTION_MAX_TOKENS,
+                json_mode=True,
+            )
+            cells.extend(parse_cells(payload, default_ts, session.timestamp))
+        return _dedupe_cells(cells)
+
+    def _windows(self, session: Session) -> list[str]:
+        """Split the session transcript on turn boundaries.
+
+        Each turn is never split across windows, so no fact is lost at a
+        boundary. Windows are packed greedily up to ``window_chars``.
+        """
+        rendered = [f"{turn.role}: {turn.content}" for turn in session.turns]
+        windows: list[str] = []
+        current: list[str] = []
+        size = 0
+        for line in rendered:
+            # A single huge turn (a pasted document, a log) still has to be
+            # extracted, so it becomes its own window rather than blowing
+            # the budget and never being seen.
+            if current and size + len(line) > self._window_chars:
+                windows.append("\n".join(current))
+                current, size = [], 0
+            current.append(line)
+            size += len(line) + 1
+        if current:
+            windows.append("\n".join(current))
+        return windows or [""]
+
+
+def _dedupe_cells(cells: list[CellInput]) -> list[CellInput]:
+    """Drop repeated cells produced by overlapping windows.
+
+    Order is preserved: the first mention wins, so a fact stated early in
+    the session keeps its original (earlier) timestamp.
+    """
+    seen: set[str] = set()
+    out: list[CellInput] = []
+    for cell in cells:
+        key = _normalize(cell.text)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(cell)
+    return out
 
 
 class NullExtractor:
